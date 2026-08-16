@@ -3,21 +3,24 @@
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
     <id>nc_migadu_password_sync</id>
     <name>Migadu Password Sync</name>
-    <summary>Propagate Nextcloud password changes to Migadu mailbox passwords</summary>
+    <summary>Propagate Nextcloud user changes to Migadu mailboxes (password, create, delete)</summary>
     <description><![CDATA[
-**Unified webmail login.** Every Nextcloud password change (personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link) — and user creation with a password — is pushed to the matching Migadu mailbox through the Migadu API. Webmail at `webmail.ronzz.org` then accepts the same NC credentials against Migadu IMAP — the NC account password *is* the mailbox password.
+**Unified webmail login.** The NC account password *is* the Migadu mailbox password. Every Nextcloud password change (personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link) — and user creation with a password — is pushed to the matching Migadu mailbox through the Migadu API; if the mailbox does not exist yet it is created on the fly. When a Nextcloud user is deleted, their Migadu mailbox is deleted too. Webmail validates against Migadu IMAP with the synced credentials, so SnappyMail needs no per-user administration.
 
-The mailbox is derived from the user's primary email address (`user@ronzz.org` → local part `user`); only addresses on the configured Migadu domain are synced. Sync failures never break the password change: they are logged at error level (divergence is visible in the Nextcloud log) and the next password change retries.
+The mailbox is derived from the user's primary email address (`user@ronzz.org` → local part `user`); only addresses on the configured Migadu domain are synced, and users listed in the exclude config are never touched. Sync failures never break the Nextcloud operation itself: they are logged at error level (divergence is visible in the Nextcloud log) and the next password change or user re-provision retries.
+
+Note: the Migadu API requires a password when creating a mailbox, so a user created in Nextcloud without a password gets its mailbox on the *first* password change.
 
 Configuration (system config, `occ config:system:set`):
 - `nc_migadu_password_sync_api_email` — Migadu admin account email
 - `nc_migadu_password_sync_api_key` — Migadu API key (Admin → My Account → API Keys)
 - `nc_migadu_password_sync_domain` — mail domain, e.g. `ronzz.org`
 - `nc_migadu_password_sync_exclude` — optional comma-separated NC user ids never synced (e.g. accounts whose email is a dummy, not a real mailbox)
+- `nc_migadu_password_sync_delete_mailboxes` — optional `true`/`false`; when `false` the mailbox is *not* deleted when the NC user is deleted (safety valve, default `true`)
 
 Connectivity check: `occ migadu:test`.
     ]]></description>
-    <version>1.0.0</version>
+    <version>1.2.0</version>
     <licence>agpl</licence>
     <author mail="it@ronzz.org">Ronzz.ORG IT</author>
     <namespace>NcMigaduPasswordSync</namespace>

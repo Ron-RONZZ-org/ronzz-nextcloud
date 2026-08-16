@@ -207,11 +207,15 @@ If `patch` fails (drift), the panel stays password-only until the patch is rebas
 - Nightly root cron `35 3 * * *`: `tar czf /var/backups/snappymail/data-<ts>.tgz -C /var/lib snappymail`, 7-day retention (covers settings, encrypted passwords, contacts; mailbox data itself lives on Migadu).
 - Plus OCI `daily-5d` boot-volume snapshots (crash-consistent).
 
-### 7.7 Unified login — NC → Migadu password sync (app `nc_migadu_password_sync`)
+### 7.7 Unified login — NC ↔ Migadu mailbox lifecycle sync (app `nc_migadu_password_sync`)
 
-> **Model:** the NC account password *is* the Migadu mailbox password. Every NC password change — personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link, or user creation with a password — is pushed to the matching Migadu mailbox via the Migadu API. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `docs/IT/migadu-api.md` (server-side).
+> **Model:** the NC account password *is* the Migadu mailbox password. The app mirrors the **NC user lifecycle** to Migadu: every password change (personal settings GUI, admin reset, `occ user:resetpassword`, email reset link) or user creation with a password is pushed to the matching Migadu mailbox (created on the fly if missing) via the Migadu API; every NC user deletion deletes their Migadu mailbox. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `docs/IT/migadu-api.md` (server-side).
 
-**How it works:** `User::setPassword()` is the single funnel for all password-change paths → `PasswordUpdatedEvent` (plaintext) → app listener → `PasswordSyncProvider` (interface) → `MigaduProvider` → `PUT /v1/domains/{domain}/mailboxes/{local_part}` with Basic auth. The mailbox is the user's primary email (`user@ronzz.org` → `user`); users with no email, a foreign domain, or an id in `nc_migadu_password_sync_exclude` are skipped. `UserCreatedEvent` is also handled (syncs when a user is created with a password **and** the email is already set).
+**How it works:** `User::setPassword()` is the single funnel for all password-change paths → `PasswordUpdatedEvent` (plaintext) → app listener → `PasswordSyncProvider` (interface) → `MigaduProvider` → Migadu API with Basic auth (GET/POST/PUT mailbox, DELETE on user removal). The mailbox is the user's primary email (`user@ronzz.org` → `user`); users with no email, a foreign domain, or an id in `nc_migadu_password_sync_exclude` are skipped.
+
+**Mailbox lifecycle (v1.2.0+):**
+- **User added** → `UserCreatedEvent` (with password) → sync path: `GET` the mailbox → `404` → `POST` create (`local_part`, `name` = display name, `password`) → webmail works immediately. If the user was created *without* a password (Migadu requires one to create a mailbox), nothing happens yet — the mailbox is auto-created on the **first password change** (`PUT` after a `404` GET, so a missing mailbox never blocks a password sync). Same self-heal covers legacy users and the old "mailbox lookup 404" failure.
+- **User deleted** → `BeforeUserDeletedEvent` captures which mailbox belongs to the user (the address is no longer readable after deletion) → `UserDeletedEvent` (fired only if the NC deletion succeeded) → `DELETE` the mailbox (idempotent: 404 = already gone, and Migadu's quirk of returning HTTP 500 on a successful delete is treated as success). ⚠️ **Destructive and irreversible** — the mailbox and all its mail are removed along with the NC user; this is the requested behaviour, and a safety valve exists: set `occ config:system:set nc_migadu_password_sync_delete_mailboxes --value=false` to keep mailboxes when NC users are deleted.
 
 **Install (manual, like dashboardlauncher — unsigned app):**
 
@@ -230,6 +234,7 @@ docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_s
 docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_api_key    --value=<key>                  # Migadu Admin → My Account → API Keys
 docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_domain     --value=ronzz.org
 docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_exclude     --value=ronzzshared            # dummy email, no mailbox
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_delete_mailboxes --value=true # delete mailbox when the NC user is deleted (default true; false = keep it)
 ```
 
 **Pre-flight check:**
@@ -238,6 +243,8 @@ docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_s
 docker exec -u www-data nextcloud php occ migadu:test
 #   OK — API credentials accepted, domain visible, mailboxes listed
 #   per-user lines: ron@ronzz.org → mailbox exists · ronzzshared → (excluded)
+#   missing mailbox → warning (auto-created on next password sync)
+#   trailing section: mailboxes without a matching NC user (orphans, informational)
 ```
 
 **Bootstrap existing mailboxes** (NC stores hashed passwords — the initial push happens on the *next* password change; there is no bulk "sync all" because the app never sees old passwords):
@@ -246,11 +253,11 @@ docker exec -u www-data nextcloud php occ migadu:test
 - Or simply let each user change their own NC password via the dashboard GUI (same event).
 - Live mapping (2026-08-16): `ron@ronzz.org` → mailbox `ron@ronzz.org` (synced); `ronzzshared` → **excluded** (email `nextcloud-shared@ronzz.org` is a dummy for the shared-files account, no mailbox).
 
-**Failure handling (divergence is graceful):** the listener never breaks the NC password change. On Migadu API failure it retries 3× (1 s / 2 s backoff), then logs `migadu_sync: password sync FAILED for user <uid> …` at **error** level with user context (the password is never logged). The mailbox keeps the old password — webmail keeps working with it. **Recovery:** fix the cause, then re-run `occ user:resetpassword <uid>` (any new password re-fires the sync). Verify readiness with `occ migadu:test`.
+**Failure handling (divergence is graceful):** the listener never breaks the NC operation (password change or user deletion). On Migadu API failure it retries 3× (1 s / 2 s backoff), then logs at **error** level with user context — `migadu_sync: password sync FAILED for user <uid> …` or `migadu_sync: mailbox deletion FAILED for user <uid> …` (the password is never logged). A failed password sync leaves the mailbox on its previous password — webmail keeps working with it; **recovery:** fix the cause, then re-run `occ user:resetpassword <uid>` (any new password re-fires the sync). A failed mailbox deletion leaves the mailbox in place — recover by checking the cause (credentials, toggle) and re-deleting the NC user, or by deleting the mailbox manually in Migadu Admin. Verify readiness with `occ migadu:test`.
 
 **Passwords policy:** a chosen password must satisfy both NC and Migadu constraints — the Migadu API rejects too-short/weak passwords (HTTP 4xx, logged as a sync failure), so use NC's default ≥ 8-char policy at minimum.
 
-**Provider portability (decided, #7):** all sync logic sits behind the `PasswordSyncProvider` interface; Migadu is one ~70-line driver. Moving mail hosts later = one new driver + mail migration (`imapsync`) — the migration, not the code, dominates.
+**Provider portability (decided, #7):** all sync logic sits behind the `PasswordSyncProvider` interface; Migadu is one driver behind it. Moving mail hosts later = one new driver + mail migration (`imapsync`) — the migration, not the code, dominates.
 
 **Webmail side:** nothing to configure in SnappyMail — login validates against Migadu IMAP, so the synced password just works. One prerequisite: SnappyMail must resolve the mail domain — an explicit `domains/ronzz.org.json` (copy of `default.json`) is in place; keep data-dir files owned by `snappymail` (§7.3, §12). The SnappyMail admin panel lives on `webmail-admin.ronzz.org`, gated behind NC login via OIDC (§7.8).
 
@@ -382,7 +389,8 @@ docker exec -u www-data nextcloud php occ background:cron
 | Need to allow another domain | Edit `whiteList` in `domains/default.json` (e.g. `"@ronzz.org @other.org"` — space-separated) and add an explicit `domains/<domain>.json` if it needs custom IMAP/SMTP |
 | `occ migadu:test` → "Missing configuration" | Run the four `config:system:set` commands in §7.7 |
 | `occ migadu:test` → HTTP 401 | Migadu API email/key wrong or expired — regenerate the key in Migadu Admin → My Account → API Keys; the account email is the **Migadu login** (not necessarily the mailbox address; see server-side `docs/IT/migadu-api.md`) |
-| `occ migadu:test` → mailbox lookup HTTP 404 | The NC user's email has no Migadu mailbox — create the mailbox, or exclude the user (`nc_migadu_password_sync_exclude`) if the email is a dummy |
+| `occ migadu:test` → mailbox lookup HTTP 404 | The NC user's email has no Migadu mailbox — **self-healing since v1.2.0**: the mailbox is auto-created on the next password sync (user creation with a password, or a password change). Optionally create it manually, or exclude the user (`nc_migadu_password_sync_exclude`) if the email is a dummy |
+| NC user deleted but Migadu mailbox still exists | Check `nc_migadu_password_sync_delete_mailboxes` isn't `false`; check the NC log for `migadu_sync: mailbox deletion FAILED …`; `occ migadu:test` lists "mailboxes without a matching Nextcloud user" to verify. Recover by re-deleting the NC user or deleting the mailbox in Migadu Admin |
 | NC password change OK but webmail login fails | Sync failure — check the NC log for `migadu_sync: password sync FAILED …`; recover by re-running `occ user:resetpassword <uid>` (fires the event again). See §7.7 |
 | Email-recovery link flow seems to "forget" the password | Not a bug — NC's `setPassword()` funnel is the same for the reset link; the sync runs exactly like any other change (§7.7) |
 
@@ -395,6 +403,7 @@ docker exec -u www-data nextcloud php occ background:cron
 - All traffic TLS-terminated at nginx; Nextcloud itself listens only on loopback.
 - **Webmail:** admin password in `/root/snappymail-admin-password.txt` (root-only) and Migadu mailbox passwords in `/var/lib/snappymail` (Sodium-encrypted, 0700) — never commit either. The admin panel is gated behind **Nextcloud login via OIDC** (§7.8): the OIDC client secret lives in `/opt/webmail-oidc/webmail-oidc.env` (root 600, server-side), sessions in `/var/lib/webmail-oidc/sessions/` (0700). Bridge sessions are not revoked by NC logout (8 h TTL) — revoke by clearing `/var/lib/webmail-oidc/sessions/*`.
 - **Migadu API key:** `nc_migadu_password_sync_api_key` in `config.php` (inside the `nc_www` volume) grants **admin-level access to every ronzz.org mailbox** — treat it like the Cloudflare token: rotate via Migadu Admin → My Account → API Keys if it leaks. The key and API email are only covered by OCI snapshots (`nc_www` is not in the nightly tar, §10).
+- **Mailbox deletion on NC user deletion is destructive** (v1.2.0+): it happens automatically and removes the mailbox irreversibly. If a migration or a "keep mail after account removal" policy is ever needed, flip `nc_migadu_password_sync_delete_mailboxes` to `false` *before* deleting users (see §7.7).
 
 ## 14. Local desktop client (admin's machine)
 

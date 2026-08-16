@@ -1,6 +1,6 @@
 {
     "name": "ronzz-org/nc-migadu-password-sync",
-    "description": "Nextcloud app: propagate Nextcloud password changes to Migadu mailbox passwords",
+    "description": "Nextcloud app: propagate Nextcloud user changes (password, create, delete) to Migadu mailboxes",
     "license": "AGPL-3.0-or-later",
     "type": "project",
     "autoload": {
