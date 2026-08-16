@@ -5,10 +5,9 @@ Gates `https://webmail-admin.ronzz.org` (the SnappyMail admin panel) behind
 panel's static bcrypt password + nginx IP allowlist are superseded by this
 bridge; `admin_totp` can still be set in the panel for an extra factor.
 
-> **Upstream plan:** the SnappyMail-side change (`webmail/patches/snappymail-admin-oidc.patch`)
-> is intended to be proposed upstream (`the-djmaze/snappymail`) as "trusted
-> proxy-auth header for the admin panel". Until merged, this patch is re-applied
-> on every SnappyMail upgrade (README §7.5 / §7.8).
+> **Upstream:** proposed as `the-djmaze/snappymail` **PR #2066** ("Admin panel:
+> accept trusted proxy-auth header"). Until merged, this patch is re-applied on
+> every SnappyMail upgrade (README §7.5 / §7.7).
 
 ## Components (live on ronzz-linux-server-2, 2026-08-16)
 

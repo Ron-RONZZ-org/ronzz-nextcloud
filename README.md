@@ -182,7 +182,7 @@ cd /tmp && wget https://github.com/the-djmaze/snappymail/releases/download/v<ver
 # GPG-verify (key 1016E47079145542F8BA133548208BA13290F3EB) before extracting
 sudo unzip -o -q snappymail-<ver>.zip -d /var/www/snappymail   # only index.php + data/VERSION are overwritten
 sudo chown -R www-data:www-data /var/www/snappymail
-# re-apply the tracked admin-OIDC patch (§7.7; upstream PR pending — safe failure if it drifts)
+# re-apply the tracked admin-OIDC patch (§7.7; upstream PR the-djmaze/snappymail#2066 — safe failure if it drifts)
 cd /var/www/snappymail/snappymail/v/<ver>/app/libraries/RainLoop
 sudo patch -p1 < /path/to/ronzz-nextcloud/webmail/patches/snappymail-admin-oidc.patch
 sudo php -l Actions/Admin.php && sudo php -l ActionsAdmin.php
