@@ -13,6 +13,7 @@
 | **Deployed** | 2026-08-14 |
 | **Stack** | Docker Compose: `nextcloud:34-apache` + `postgres:17-alpine` + `redis:7-alpine` |
 | **Edge** | Host nginx (systemd) → `127.0.0.1:8080`, TLS via acme.sh / Let's Encrypt |
+| **Webmail** | `https://webmail.ronzz.org` — SnappyMail 2.38.2 (PHP-FPM, no DB) — see §7 |
 | **OS** | Ubuntu 24.04.3 LTS (aarch64) |
 
 ---
@@ -45,6 +46,7 @@ Internet ──443──▶ host nginx (systemd, existing) ──127.0.0.1:8080�
 ## 3. DNS & TLS
 
 - **DNS:** A record `dashboard.ronzz.org → 158.178.193.231`, **grey cloud (proxied: false)** — Cloudflare API (zone `ronzz.org`, record id `7371ab210ed1b15ac16a3181d7dd5045`). Grey cloud is required for large file uploads (proxy caps ~100 MB).
+- **DNS:** A record `webmail.ronzz.org → 158.178.193.231`, **grey cloud (proxied: false)** — Cloudflare API (zone `ronzz.org`, record id `7ced9195776f299042c9e9baa43bb21b`) — SnappyMail webmail (see §7).
 - **TLS:** Let's Encrypt ECC cert, issued via acme.sh (`--home /etc/letsencrypt`, `--ecc`), installed to `/etc/letsencrypt/dashboard.ronzz.org/{fullchain,privkey}.pem`.
 - **Renewal:** existing root cron `acme.sh --cron --home /etc/letsencrypt` (reloads nginx via reloadcmd).
 - **nginx vhost:** `/etc/nginx/sites-available/dashboard.ronzz.org.conf` — 10 G upload limit, websocket upgrade headers (Talk), HTTP→HTTPS redirect.
@@ -116,13 +118,77 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 
 - `defaultapp` → `dashboardlauncher`: every login lands on `/apps/dashboardlauncher/`, an ENT-style **button grid** of available apps (note: no search bar — tiles only; a search filter could be added as a small patch later).
 - Buttons live in DB table `oc_dashboardlauncher_buttons` (`titre`, `icone`, `route`, `ordre`, `groupes` JSON array of groups, `actif`, `taille`). Routes use the `apps/<id>` form (the page sits 2 path levels deep, so the template's `../../<route>` resolves to `/apps/<id>/`).
-- Icons (2026-08-16): official Nextcloud app glyphs — dark variants where shipped (`app-dark.svg`, `deck-dark.svg`, `activity-dark.svg`, `spreed/app-dark.svg`), else the app's `app.svg` inverted `#fff`→`#000` (calendar, contacts, photos). Stored as `icon_<sha1:16>.<ext>` in appdata `data/appdata_<instanceid>/dashboardlauncher/icons/` (the `icone` value is the filename). `.button-icon` CSS has no invert filter, so only dark glyphs are visible on the white portal background.
+- **External-URL buttons (patch, 2026-08-16):** `templates/main.php` now detects absolute URLs (`^https?://`) — those render as-is with `target="_blank" rel="noopener noreferrer"` (the stock template hardcodes `../../`, which would break `https://…` routes). Used by the Webmail tile → `https://webmail.ronzz.org` (see §7). Backward compatible with `apps/<id>` routes.
+- Icons (2026-08-16): official Nextcloud app glyphs — dark variants where shipped (`app-dark.svg`, `deck-dark.svg`, `activity-dark.svg`, `spreed/app-dark.svg`), else the app's `app.svg` inverted `#fff`→`#000` (calendar, contacts, photos). Stored as `icon_<sha1:16>.<ext>` in appdata `data/appdata_<instanceid>/dashboardlauncher/icons/` (the `icone` value is the filename). `.button-icon` CSS has no invert filter, so only dark glyphs are visible on the white portal background. Webmail tile uses the NC Mail app's envelope SVG inverted to black.
 - Site text stored in appconfig: `occ config:app:set dashboardlauncher site_title|welcome_text|footer_text --value="…"` — `{displayName}` is interpolated server-side.
 - Admin UI: **Settings → Administration → Dashboard Launcher** — title/welcome/footer, add/reorder/group-restrict buttons, upload icons.
-- Buttons as of 2026-08-16: Fichiers, Calendrier, Contacts, Deck, Photos, Talk, Activité. (Text omitted — no standalone page route in NC 34, it's an embedded editor.)
+- Buttons as of 2026-08-16: Fichiers, Calendrier, Contacts, Deck, Photos, Talk, Activité, Webmail. (Text omitted — no standalone page route in NC 34, it's an embedded editor.)
 - The widgets Dashboard app stays enabled at `/apps/dashboard/` — it's just no longer the landing page.
 
-## 7. Branding
+## 7. Webmail — webmail.ronzz.org (SnappyMail)
+
+> Self-hosted webmail UI for Migadu-hosted `@ronzz.org` mail (issue #4; part of the webmail master issue #3 — SnappyMail + lighterbird idler + custom plugins).
+> The UI connects **outbound** to Migadu IMAP/SMTP — no mail server runs here.
+
+| | |
+|---|---|
+| **URL** | `https://webmail.ronzz.org` (HTTP → HTTPS 301) |
+| **Version** | SnappyMail 2.38.2 (release zip, GPG-verified against `releases@snappymail.eu`) |
+| **Deployed** | 2026-08-16 |
+| **Stack** | PHP 8.3-FPM (dedicated `snappymail` pool), no DB, no Docker |
+| **Webroot** | `/var/www/snappymail` |
+| **Data dir** | `/var/lib/snappymail` — outside webroot (`APP_DATA_FOLDER_PATH`), user `snappymail`, 0700 |
+| **Mail server** | Migadu — IMAP `imap.migadu.com:993` (SSL), SMTP `smtp.migadu.com:465` (SSL), ManageSieve `managesieve.migadu.com:4190` |
+
+### 7.1 Architecture
+
+```
+Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 8.3 (pool snappymail, /run/php/snappymail-fpm.sock)
+                 webmail.ronzz.org                      │  data: /var/lib/snappymail (0700)
+                 LE ECC cert                            │  ──IMAP/SMTP/Sieve──▶ Migadu (ronzz.org mailboxes)
+```
+
+- **Native PHP-FPM, not Docker** — matches the wikibase pattern on this box; upgrade = overwrite files; no ARM64 image dependency (official image `djmaze/snappymail` is multi-arch, but unnecessary here).
+- The data dir holds user settings, **encrypted mailbox passwords (Sodium)**, caches, contacts — the only state to back up.
+- **Vendor-risk note (from #3):** single-maintainer project, last release 2024-10 (repo commits through 2026-03). Mitigation: keep all custom logic in the idler backend + thin plugins so the UI stays replaceable.
+
+### 7.2 DNS & TLS
+
+- **DNS:** A record `webmail.ronzz.org → 158.178.193.231`, grey cloud — Cloudflare API, record id `7ced9195776f299042c9e9baa43bb21b` (see §3).
+- **TLS:** Let's Encrypt ECC cert via acme.sh **DNS-01** (`--dns dns_cf`, Cloudflare token), installed to `/etc/letsencrypt/webmail.ronzz.org/{fullchain,privkey}.pem`; auto-renewed by the existing root cron (`acme.sh --cron`). Domain conf: `/etc/letsencrypt/webmail.ronzz.org_ecc/webmail.ronzz.org.conf`.
+- **nginx:** `/etc/nginx/sites-available/webmail.ronzz.org.conf` (symlinked) — HTTP→HTTPS, security headers, `deny /data/`, dotfile block, 50M upload cap, fastcgi to the snappymail socket.
+
+### 7.3 Deployment & config
+
+- **Install:** extract the release zip into `/var/www/snappymail` (owner `www-data`); `data/` moved out of the webroot to `/var/lib/snappymail` via `include.php` (`APP_DATA_FOLDER_PATH` — **must end with `/`**, see §12).
+- **PHP-FPM pool:** `/etc/php/8.3/fpm/pool.d/snappymail.conf` — user `snappymail`, socket `/run/php/snappymail-fpm.sock`, `pm.max_children = 4`.
+- **Config files** (the admin UI writes the same files — direct edits are fine):
+  - `application.ini` (`/var/lib/snappymail/_data_/_default_/configs/`) — admin credentials, `default_domain = "ronzz.org"` (bare logins map to ronzz.org), `force_https = On`, title/loading branding.
+  - `domains/default.json` — Migadu defaults: IMAP 993 / SMTP 465 / Sieve 4190, `type: 1` (implicit SSL), **cert verification ON** (`verify_peer`/`verify_peer_name`).
+- **Login model (decided, #3): SnappyMail-managed users** — admin → Login → Users creates the webmail account; each user's IMAP account maps to their Migadu mailbox (mailbox password entered once under Settings → Accounts, stored encrypted with Sodium).
+
+### 7.4 Security
+
+- Admin panel `/?admin`: **nginx IP allowlist** (`185.5.129.0/24` — Lebara FR mobile CGNAT egress range; update the regex if the admin's ISP range changes) **+ strong admin password** (24-char random, at `/root/snappymail-admin-password.txt`, root-only — **change it in panel → Security on first login**).
+- Hardening options after provisioning: `allow_admin_panel = Off` in `application.ini` disables the panel entirely (re-enable: flip to `On`; no service reload needed — config is read per request).
+- HTTPS enforced at nginx (301) and app level (`force_https`). Data dir is 0700 outside webroot. User SMTP server settings keep the Migadu default (prevents data exfiltration to arbitrary hosts).
+- `APP_REMOTE_HOST_WHITE_LIST` (mentioned in #4) is **not** a SnappyMail option — the equivalent built-ins are the Fetch-Metadata request checks (on by default) plus the nginx IP gate above.
+
+### 7.5 Upgrade
+
+```bash
+cd /tmp && wget https://github.com/the-djmaze/snappymail/releases/download/v<ver>/snappymail-<ver>.zip
+# GPG-verify (key 1016E47079145542F8BA133548208BA13290F3EB) before extracting
+sudo unzip -o -q snappymail-<ver>.zip -d /var/www/snappymail   # only index.php + data/VERSION are overwritten
+sudo chown -R www-data:www-data /var/www/snappymail
+```
+
+### 7.6 Backup
+
+- Nightly root cron `35 3 * * *`: `tar czf /var/backups/snappymail/data-<ts>.tgz -C /var/lib snappymail`, 7-day retention (covers settings, encrypted passwords, contacts; mailbox data itself lives on Migadu).
+- Plus OCI `daily-5d` boot-volume snapshots (crash-consistent).
+
+## 8. Branding
 
 - Name: **Ronzz.ORG** · Slogan: **Where miracles happen.**
 - Primary color `#9bf141`, background `#fdfbfb`; logo = `Ronzz-org-emblemo.png` (1308×400).
@@ -130,7 +196,7 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 - Commands: `occ theming:config <name|slogan|primary_color|background_color|logo> <value>`
   (logo accepts a path readable by `www-data` inside the container).
 
-## 8. Users & access
+## 9. Users & access
 
 | User | Role | Notes |
 |---|---|---|
@@ -143,7 +209,7 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 - **Token hygiene:** after the client account-removal bug, stale desktop tokens were revoked
   (`occ user:auth-tokens:delete <user> <id>`). Verify live tokens via `occ user:auth-tokens:list <user>`.
 
-## 9. Backups
+## 10. Backups
 
 **Nightly local backup** — `/opt/nextcloud/backup.sh`, cron `30 3 * * *`:
 
@@ -157,6 +223,7 @@ docker run --rm -v nc_data:/data:ro -v /var/backups/nextcloud:/backup \
 - Retention: 7 days (oldest SQL/tgz removed).
 - **Plus** OCI `daily-5d` boot-volume backups (crash-consistent; the local dump covers app-consistency).
 - Note: `nc_www` (Nextcloud code + `custom_apps/`, incl. Dashboard Launcher) is **not** in the nightly tar — only the OCI `daily-5d` snapshots cover it.
+- **Webmail (separate cron `35 3 * * *`):** `tar czf /var/backups/snappymail/data-<ts>.tgz -C /var/lib snappymail`, 7-day retention — see §7.6.
 
 ### Restore procedure
 
@@ -183,7 +250,7 @@ docker exec -u www-data nextcloud php occ files:scan --all
 
 > Always test the restore path before you need it.
 
-## 10. Common operations (occ cheat sheet)
+## 11. Common operations (occ cheat sheet)
 
 ```bash
 docker exec -u www-data nextcloud php occ status
@@ -195,7 +262,7 @@ docker exec -u www-data nextcloud php occ config:system:get <key>
 docker exec -u www-data nextcloud php occ background:cron
 ```
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Symptom | Check |
 |---|---|
@@ -208,16 +275,23 @@ docker exec -u www-data nextcloud php occ background:cron
 | Talk video calls fail | Add coturn (`coturn/coturn` image, arm64) + configure Talk TURN settings |
 | Disk filling | Retention is `auto, 30`; check `df -h /`, `occ files:scan`, then grow/attach volume |
 | Fingerprint validation in OCI SDK | Real OCI fingerprints are **MD5 of the DER public key** (16 bytes); SDK regex accepts 16 groups |
+| SnappyMail first run → `mkdir() failed` (data dir) | `APP_DATA_FOLDER_PATH` in `include.php` **must end with `/`** — `/var/lib/snappymail/` (without it SnappyMail concatenates the install-marker dir name) |
+| `/?admin` → 403 from home, works elsewhere | Wrong — the nginx IP allowlist in `webmail.ronzz.org.conf` covers `185.5.129.0/24` (Lebara mobile CGNAT); if the admin's egress range changed, update the regex (or remove the gate — the panel stays password-protected) |
+| Admin panel won't open after hardening | `allow_admin_panel = Off` in `application.ini` — flip to `On` (config is read per request, no reload) |
+| Webmail can't reach Migadu | Check `domains/default.json` — `imap.migadu.com:993` / `smtp.migadu.com:465`, `type: 1` (implicit SSL), `verify_peer: true` |
+| Repeated mailbox-password prompts | SnappyMail decrypts stored passwords with Sodium — the FPM pool user `snappymail` must be able to read `/var/lib/snappymail/SALT.php` |
+| Webmail login fails for a bare username | `default_domain` in `application.ini` must be `ronzz.org` (or use the full `user@ronzz.org`) |
 
-## 12. Security notes
+## 13. Security notes
 
 - `.env` holds the DB + initial admin passwords — **never commit or share it** (perms 600).
 - The Cloudflare API token lives in the root crontab for acme.sh DNS renewals — rotate it if it leaks.
 - External link shares: password + expiry, never "can reshare".
 - Keep `admin` disabled; use per-user accounts + app passwords for automation.
 - All traffic TLS-terminated at nginx; Nextcloud itself listens only on loopback.
+- **Webmail:** admin password in `/root/snappymail-admin-password.txt` (root-only) and Migadu mailbox passwords in `/var/lib/snappymail` (Sodium-encrypted, 0700) — never commit either. Admin panel is additionally IP-gated at nginx (§7.4).
 
-## 13. Local desktop client (admin's machine)
+## 14. Local desktop client (admin's machine)
 
 - Install: apt `nextcloud-desktop` (33.0.2), started via **systemd user service**
   (`com.nextcloud.desktopclient.nextcloud.service`) — the legacy `~/.config/autostart/Nextcloud.desktop`
