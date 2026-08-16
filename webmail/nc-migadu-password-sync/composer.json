@@ -1,0 +1,11 @@
+{
+    "name": "ronzz-org/nc-migadu-password-sync",
+    "description": "Nextcloud app: propagate Nextcloud password changes to Migadu mailbox passwords",
+    "license": "AGPL-3.0-or-later",
+    "type": "project",
+    "autoload": {
+        "psr-4": {
+            "OCA\\NcMigaduPasswordSync\\": "lib/"
+        }
+    }
+}
