@@ -1,0 +1,19 @@
+[Unit]
+Description=Webmail admin OIDC-RP sidecar (SnappyMail admin panel behind Nextcloud login)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webmail-oidc
+Group=webmail-oidc
+WorkingDirectory=/opt/webmail-oidc
+EnvironmentFile=/opt/webmail-oidc/webmail-oidc.env
+Environment=PATH=/opt/webmail-oidc/.venv/bin:/usr/bin
+ExecStart=/opt/webmail-oidc/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8015
+Restart=on-failure
+RestartSec=5
+# 8 h sessions are expected; keep the cookie in sync via WMA_SESSION_TTL above
+
+[Install]
+WantedBy=multi-user.target
