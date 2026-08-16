@@ -16,6 +16,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   1. configuration present
  *   2. Migadu API accepts the credentials and can see the domain
  *   3. mailboxes of all NC users on the configured domain exist in Migadu
+ *      (missing ones are auto-created on the next password sync)
+ *   4. orphaned mailboxes: present in Migadu but not owned by any NC user
  *
  * Exit code 0 = ready, 1 = something needs fixing.
  */
@@ -98,8 +100,25 @@ class MigaduTestCommand extends Command {
 			if ($code === 200) {
 				$output->writeln(sprintf('  <info>%-30s %s → mailbox exists</info>', $uid, $email));
 			} else {
-				$output->writeln(sprintf('  <error>%-30s %s → mailbox lookup HTTP %d (will fail on next password change)</error>', $uid, $email, $code));
-				$failed = true;
+				$output->writeln(sprintf('  <warning>%-30s %s → mailbox missing (auto-created on the next password sync)</warning>', $uid, $email));
+			}
+		}
+
+		// 4) Orphaned mailboxes: present in Migadu but not owned by any NC user.
+		// Informational only — a mailbox may intentionally not map to an NC user.
+		$ncEmails = [];
+		foreach ($this->userManager->search('') as $user) {
+			$email = strtolower(trim((string)($user->getEMailAddress() ?? '')));
+			if ($email !== '' && str_ends_with($email, '@' . $domain)) {
+				$ncEmails[] = $email;
+			}
+		}
+		$orphans = array_values(array_diff($mailboxes, $ncEmails));
+		if ($orphans !== []) {
+			$output->writeln('');
+			$output->writeln('Mailboxes without a matching Nextcloud user (not deleted — possibly manual or from a removed user):');
+			foreach ($orphans as $orphan) {
+				$output->writeln('  ' . $orphan);
 			}
 		}
 

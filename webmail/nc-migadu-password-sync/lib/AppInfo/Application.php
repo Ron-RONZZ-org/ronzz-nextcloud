@@ -11,8 +11,10 @@ use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
+use OCP\User\Events\BeforeUserDeletedEvent;
 use OCP\User\Events\PasswordUpdatedEvent;
 use OCP\User\Events\UserCreatedEvent;
+use OCP\User\Events\UserDeletedEvent;
 
 class Application extends App implements IBootstrap {
 	public const APP_ID = 'nc_migadu_password_sync';
@@ -27,6 +29,8 @@ class Application extends App implements IBootstrap {
 		$context->registerServiceAlias(PasswordSyncProvider::class, MigaduProvider::class);
 		$context->registerEventListener(PasswordUpdatedEvent::class, PasswordSyncListener::class);
 		$context->registerEventListener(UserCreatedEvent::class, PasswordSyncListener::class);
+		$context->registerEventListener(BeforeUserDeletedEvent::class, PasswordSyncListener::class);
+		$context->registerEventListener(UserDeletedEvent::class, PasswordSyncListener::class);
 	}
 
 	public function boot(IBootContext $context): void {
