@@ -165,7 +165,7 @@ Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 
 - **Config files** (the admin UI writes the same files — direct edits are fine):
   - `application.ini` (`/var/lib/snappymail/_data_/_default_/configs/`) — admin credentials, `default_domain = "ronzz.org"` (bare logins map to ronzz.org), `force_https = On`, title/loading branding.
   - `domains/default.json` — Migadu defaults: IMAP 993 / SMTP 465 / Sieve 4190, `type: 1` (implicit SSL), **cert verification ON** (`verify_peer`/`verify_peer_name`).
-- **Login model (decided, #3): SnappyMail-managed users** — admin → Login → Users creates the webmail account; each user's IMAP account maps to their Migadu mailbox (mailbox password entered once under Settings → Accounts, stored encrypted with Sodium).
+- **Login model (decided, #7 — supersedes #3): unified password, synced from Nextcloud.** The Ronzz NC account password **is** the Migadu mailbox password: webmail login uses the same email + NC password, validated by SnappyMail against Migadu IMAP. No separate mailbox password, no SnappyMail-managed user administration (accounts self-provision on first login). The NC app `nc_migadu_password_sync` propagates every NC password change to the mailbox through the Migadu API — see §7.7.
 
 ### 7.4 Security
 
@@ -173,6 +173,7 @@ Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 
 - Hardening options after provisioning: `allow_admin_panel = Off` in `application.ini` disables the panel entirely (re-enable: flip to `On`; no service reload needed — config is read per request).
 - HTTPS enforced at nginx (301) and app level (`force_https`). Data dir is 0700 outside webroot. User SMTP server settings keep the Migadu default (prevents data exfiltration to arbitrary hosts).
 - `APP_REMOTE_HOST_WHITE_LIST` (mentioned in #4) is **not** a SnappyMail option — the equivalent built-ins are the Fetch-Metadata request checks (on by default) plus the nginx IP gate above.
+- **Password-reuse tradeoff (accepted, #7):** the NC password also guards email. NC TOTP protects the portal **only** — IMAP cannot do TOTP. Mitigation: strong, unique master password. A sync failure never blocks the NC password change; divergence is logged and recoverable (§7.7).
 
 ### 7.5 Upgrade
 
@@ -188,6 +189,53 @@ sudo chown -R www-data:www-data /var/www/snappymail
 - Nightly root cron `35 3 * * *`: `tar czf /var/backups/snappymail/data-<ts>.tgz -C /var/lib snappymail`, 7-day retention (covers settings, encrypted passwords, contacts; mailbox data itself lives on Migadu).
 - Plus OCI `daily-5d` boot-volume snapshots (crash-consistent).
 
+### 7.7 Unified login — NC → Migadu password sync (app `nc_migadu_password_sync`)
+
+> **Model:** the NC account password *is* the Migadu mailbox password. Every NC password change — personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link, or user creation with a password — is pushed to the matching Migadu mailbox via the Migadu API. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `docs/IT/migadu-api.md` (server-side).
+
+**How it works:** `User::setPassword()` is the single funnel for all password-change paths → `PasswordUpdatedEvent` (plaintext) → app listener → `PasswordSyncProvider` (interface) → `MigaduProvider` → `PUT /v1/domains/{domain}/mailboxes/{local_part}` with Basic auth. The mailbox is the user's primary email (`user@ronzz.org` → `user`); users with no email, a foreign domain, or an id in `nc_migadu_password_sync_exclude` are skipped. `UserCreatedEvent` is also handled (syncs when a user is created with a password **and** the email is already set).
+
+**Install (manual, like dashboardlauncher — unsigned app):**
+
+```bash
+# 1. App files (source: webmail/nc-migadu-password-sync/ in this repo)
+docker cp webmail/nc-migadu-password-sync.tar.gz nextcloud:/tmp/
+docker exec nextcloud sh -c "cd /var/www/html/custom_apps && tar xzf /tmp/...tgz && mv nc-migadu-password-sync nc_migadu_password_sync && chown -R www-data:www-data nc_migadu_password_sync"
+# 2. Enable
+docker exec -u www-data nextcloud php occ app:enable nc_migadu_password_sync
+```
+
+**Config (system config, `config.php` — the API key must never go in the DB):**
+
+```bash
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_api_email --value=rong.zhou.05@outlook.com   # Migadu account login
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_api_key    --value=<key>                  # Migadu Admin → My Account → API Keys
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_domain     --value=ronzz.org
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_exclude     --value=ronzzshared            # dummy email, no mailbox
+```
+
+**Pre-flight check:**
+
+```bash
+docker exec -u www-data nextcloud php occ migadu:test
+#   OK — API credentials accepted, domain visible, mailboxes listed
+#   per-user lines: ron@ronzz.org → mailbox exists · ronzzshared → (excluded)
+```
+
+**Bootstrap existing mailboxes** (NC stores hashed passwords — the initial push happens on the *next* password change; there is no bulk "sync all" because the app never sees old passwords):
+
+- **Per user:** `docker exec -e OC_PASS='<new password>' -u www-data nextcloud php occ user:resetpassword <uid> --password-from-env` — fires the event → Migadu updated → webmail login works with the same password.
+- Or simply let each user change their own NC password via the dashboard GUI (same event).
+- Live mapping (2026-08-16): `ron@ronzz.org` → mailbox `ron@ronzz.org` (synced); `ronzzshared` → **excluded** (email `nextcloud-shared@ronzz.org` is a dummy for the shared-files account, no mailbox).
+
+**Failure handling (divergence is graceful):** the listener never breaks the NC password change. On Migadu API failure it retries 3× (1 s / 2 s backoff), then logs `migadu_sync: password sync FAILED for user <uid> …` at **error** level with user context (the password is never logged). The mailbox keeps the old password — webmail keeps working with it. **Recovery:** fix the cause, then re-run `occ user:resetpassword <uid>` (any new password re-fires the sync). Verify readiness with `occ migadu:test`.
+
+**Passwords policy:** a chosen password must satisfy both NC and Migadu constraints — the Migadu API rejects too-short/weak passwords (HTTP 4xx, logged as a sync failure), so use NC's default ≥ 8-char policy at minimum.
+
+**Provider portability (decided, #7):** all sync logic sits behind the `PasswordSyncProvider` interface; Migadu is one ~70-line driver. Moving mail hosts later = one new driver + mail migration (`imapsync`) — the migration, not the code, dominates.
+
+**Webmail side:** nothing to configure in SnappyMail — login validates against Migadu IMAP, so the synced password just works. The SnappyMail admin panel (`/?admin`) remains separate (nginx IP gate + its own password, §7.4).
+
 ## 8. Branding
 
 - Name: **Ronzz.ORG** · Slogan: **Where miracles happen.**
@@ -200,8 +248,8 @@ sudo chown -R www-data:www-data /var/www/snappymail
 
 | User | Role | Notes |
 |---|---|---|
-| `ron@ronzz.org` | Admin (group `admin`) | Primary admin account |
-| `ronzzshared` | Member | Dedicated **shared/team** account ("Ronzz Shared") |
+| `ron@ronzz.org` | Admin (group `admin`) | Primary admin account — **unified login**: NC password = Migadu mailbox password, synced (§7.7) |
+| `ronzzshared` | Member | Dedicated **shared/team** account ("Ronzz Shared") — **excluded** from mailbox sync: its email `nextcloud-shared@ronzz.org` is a dummy (no Migadu mailbox) |
 | `admin` | **Disabled** | Default install admin — disabled via `occ user:disable admin` (2026-08-14) |
 
 - **App passwords:** `occ user:add-app-password <user>` — use for scripts/clients instead of the master password.
@@ -281,6 +329,11 @@ docker exec -u www-data nextcloud php occ background:cron
 | Webmail can't reach Migadu | Check `domains/default.json` — `imap.migadu.com:993` / `smtp.migadu.com:465`, `type: 1` (implicit SSL), `verify_peer: true` |
 | Repeated mailbox-password prompts | SnappyMail decrypts stored passwords with Sodium — the FPM pool user `snappymail` must be able to read `/var/lib/snappymail/SALT.php` |
 | Webmail login fails for a bare username | `default_domain` in `application.ini` must be `ronzz.org` (or use the full `user@ronzz.org`) |
+| `occ migadu:test` → "Missing configuration" | Run the four `config:system:set` commands in §7.7 |
+| `occ migadu:test` → HTTP 401 | Migadu API email/key wrong or expired — regenerate the key in Migadu Admin → My Account → API Keys; the account email is the **Migadu login** (here `rong.zhou.05@outlook.com`), not necessarily the mailbox address |
+| `occ migadu:test` → mailbox lookup HTTP 404 | The NC user's email has no Migadu mailbox — create the mailbox, or exclude the user (`nc_migadu_password_sync_exclude`) if the email is a dummy |
+| NC password change OK but webmail login fails | Sync failure — check the NC log for `migadu_sync: password sync FAILED …`; recover by re-running `occ user:resetpassword <uid>` (fires the event again). See §7.7 |
+| Email-recovery link flow seems to "forget" the password | Not a bug — NC's `setPassword()` funnel is the same for the reset link; the sync runs exactly like any other change (§7.7) |
 
 ## 13. Security notes
 
@@ -290,6 +343,7 @@ docker exec -u www-data nextcloud php occ background:cron
 - Keep `admin` disabled; use per-user accounts + app passwords for automation.
 - All traffic TLS-terminated at nginx; Nextcloud itself listens only on loopback.
 - **Webmail:** admin password in `/root/snappymail-admin-password.txt` (root-only) and Migadu mailbox passwords in `/var/lib/snappymail` (Sodium-encrypted, 0700) — never commit either. Admin panel is additionally IP-gated at nginx (§7.4).
+- **Migadu API key:** `nc_migadu_password_sync_api_key` in `config.php` (inside the `nc_www` volume) grants **admin-level access to every ronzz.org mailbox** — treat it like the Cloudflare token: rotate via Migadu Admin → My Account → API Keys if it leaks. The key and API email are only covered by OCI snapshots (`nc_www` is not in the nightly tar, §10).
 
 ## 14. Local desktop client (admin's machine)
 
