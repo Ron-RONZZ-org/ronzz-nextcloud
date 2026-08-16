@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>nc_migadu_password_sync</id>
+    <name>Migadu Password Sync</name>
+    <summary>Propagate Nextcloud password changes to Migadu mailbox passwords</summary>
+    <description><![CDATA[
+**Unified webmail login.** Every Nextcloud password change (personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link) — and user creation with a password — is pushed to the matching Migadu mailbox through the Migadu API. Webmail at `webmail.ronzz.org` then accepts the same NC credentials against Migadu IMAP — the NC account password *is* the mailbox password.
+
+The mailbox is derived from the user's primary email address (`user@ronzz.org` → local part `user`); only addresses on the configured Migadu domain are synced. Sync failures never break the password change: they are logged at error level (divergence is visible in the Nextcloud log) and the next password change retries.
+
+Configuration (system config, `occ config:system:set`):
+- `nc_migadu_password_sync_api_email` — Migadu admin account email
+- `nc_migadu_password_sync_api_key` — Migadu API key (Admin → My Account → API Keys)
+- `nc_migadu_password_sync_domain` — mail domain, e.g. `ronzz.org`
+- `nc_migadu_password_sync_exclude` — optional comma-separated NC user ids never synced (e.g. accounts whose email is a dummy, not a real mailbox)
+
+Connectivity check: `occ migadu:test`.
+    ]]></description>
+    <version>1.0.0</version>
+    <licence>agpl</licence>
+    <author mail="it@ronzz.org">Ronzz.ORG IT</author>
+    <namespace>NcMigaduPasswordSync</namespace>
+    <category>integration</category>
+    <website>https://github.com/Ron-RONZZ-org/ronzz-nextcloud</website>
+    <bugs>https://github.com/Ron-RONZZ-org/ronzz-nextcloud/issues</bugs>
+    <repository>https://github.com/Ron-RONZZ-org/ronzz-nextcloud</repository>
+    <dependencies>
+        <nextcloud min-version="28" max-version="34"/>
+    </dependencies>
+    <commands>
+        <command>OCA\NcMigaduPasswordSync\Command\MigaduTestCommand</command>
+    </commands>
+</info>
