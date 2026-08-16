@@ -155,6 +155,7 @@ Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 
 ### 7.2 DNS & TLS
 
 - **DNS:** A record `webmail.ronzz.org → 158.178.193.231`, grey cloud — Cloudflare API, record id `7ced9195776f299042c9e9baa43bb21b` (see §3).
+- **DNS (admin panel):** A record `webmail-admin.ronzz.org → 158.178.193.231`, grey cloud — Cloudflare API, record id `d541bd14bc7fd58df96428b95b55c52d` (2026-08-16; OIDC-gated panel, §7.8).
 - **TLS:** Let's Encrypt ECC cert via acme.sh **DNS-01** (`--dns dns_cf`, Cloudflare token), installed to `/etc/letsencrypt/webmail.ronzz.org/{fullchain,privkey}.pem`; auto-renewed by the existing root cron (`acme.sh --cron`). Domain conf: `/etc/letsencrypt/webmail.ronzz.org_ecc/webmail.ronzz.org.conf`.
 - **nginx:** `/etc/nginx/sites-available/webmail.ronzz.org.conf` (symlinked) — HTTP→HTTPS, security headers, `deny /data/`, dotfile block, 50M upload cap, fastcgi to the snappymail socket.
 
@@ -165,15 +166,19 @@ Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 
 - **Config files** (the admin UI writes the same files — direct edits are fine):
   - `application.ini` (`/var/lib/snappymail/_data_/_default_/configs/`) — admin credentials, `default_domain = "ronzz.org"` (bare logins map to ronzz.org), `force_https = On`, title/loading branding.
   - `domains/default.json` — Migadu defaults: IMAP 993 / SMTP 465 / Sieve 4190, `type: 1` (implicit SSL), **cert verification ON** (`verify_peer`/`verify_peer_name`).
-- **Login model (decided, #3): SnappyMail-managed users** — admin → Login → Users creates the webmail account; each user's IMAP account maps to their Migadu mailbox (mailbox password entered once under Settings → Accounts, stored encrypted with Sodium).
+  - `domains/ronzz.org.json` — explicit per-domain config (copy of `default.json`; SnappyMail resolves a domain only via its exact file, an alias, or the `default.json` wildcard — see §12).
+  - **Domain whitelist (2026-08-16):** both `default.json` and `ronzz.org.json` carry `"whiteList": "@ronzz.org"` — **login is restricted to @ronzz.org addresses** (bare logins get `default_domain` appended). Any other domain is rejected at the domain gate ("not whitelisted"); the shipped `disabled` list additionally blocks gmail/hotmail/outlook/qq/yahoo. No IP restriction — works off-premise (§7.4).
+- **Login model (decided, #7 — supersedes #3): unified password, synced from Nextcloud.** The Ronzz NC account password **is** the Migadu mailbox password: webmail login uses the same email + NC password, validated by SnappyMail against Migadu IMAP. No separate mailbox password, no SnappyMail-managed user administration (accounts self-provision on first login). The NC app `nc_migadu_password_sync` propagates every NC password change to the mailbox through the Migadu API — see §7.7. ⚠️ **Data-dir ownership pitfall:** everything under `/var/lib/snappymail` must be owned by the FPM pool user `snappymail` — a `www-data`-owned `domains/*.json` silently breaks login with *"has no domain configuration"* (fixed 2026-08-16; see §12).
 
 ### 7.4 Security
 
-- **Admin panel (2026-08-16): gated behind Nextcloud login via OIDC.** The panel moved to its own hostname `https://webmail-admin.ronzz.org` (`admin_panel.host` in `application.ini` — the old `/?admin` on `webmail.ronzz.org` no longer opens the panel). Access requires a valid **Nextcloud session** (NC acts as OIDC IdP via the `H2CK/oidc` app; login includes NC TOTP if enabled): nginx `auth_request` → OIDC-RP sidecar (`/opt/webmail-oidc`, systemd `webmail-oidc`) → session cookie. The previous nginx IP allowlist + static admin password are superseded. Full runbook: **§7.7**; artifacts in `webmail/webmail-admin-oidc/` and `webmail/patches/`.
+- **Admin panel (2026-08-16): gated behind Nextcloud login via OIDC.** The panel moved to its own hostname `https://webmail-admin.ronzz.org` (`admin_panel.host` in `application.ini` — the old `/?admin` on `webmail.ronzz.org` no longer opens the panel). Access requires a valid **Nextcloud session** (NC acts as OIDC IdP via the `H2CK/oidc` app; login includes NC TOTP if enabled): nginx `auth_request` → OIDC-RP sidecar (`/opt/webmail-oidc`, systemd `webmail-oidc`) → session cookie. The previous nginx IP allowlist + static admin password are superseded. Full runbook: **§7.8**; artifacts in `webmail/webmail-admin-oidc/` and `webmail/patches/`.
 - The old static credentials still exist as a fallback: `admin_login`/`admin_password` in `application.ini` (bcrypt; the panel → Security section can also set `admin_totp` for an extra factor).
 - Hardening options after provisioning: `allow_admin_panel = Off` in `application.ini` disables the panel entirely (re-enable: flip to `On`; no service reload needed — config is read per request).
 - HTTPS enforced at nginx (301) and app level (`force_https`). Data dir is 0700 outside webroot. User SMTP server settings keep the Migadu default (prevents data exfiltration to arbitrary hosts).
 - `APP_REMOTE_HOST_WHITE_LIST` (mentioned in #4) is **not** a SnappyMail option — the equivalent built-ins are the Fetch-Metadata request checks (on by default; `secfetch_allow = "site=same-site"` was added for the OIDC redirect navigation).
+- **Login domain restriction (2026-08-16):** webmail accepts **@ronzz.org accounts only** — enforced by `"whiteList": "@ronzz.org"` in `domains/default.json` + `domains/ronzz.org.json` (works from anywhere; no IP gate). External-domain logins are rejected at the domain gate before any IMAP connection, so the instance can't be used as a generic webmail proxy. The SnappyMail driver is file-based `DefaultDomain` (no autoconfig auto-discovery in this install). The shipped `domains/disabled` list additionally blocks gmail/hotmail/outlook/qq/yahoo.
+- **Password-reuse tradeoff (accepted, #7):** the NC password also guards email. NC TOTP protects the portal **only** — IMAP cannot do TOTP. Mitigation: strong, unique master password. A sync failure never blocks the NC password change; divergence is logged and recoverable (§7.7).
 
 ### 7.5 Upgrade (incl. admin-OIDC patch replay)
 
@@ -182,7 +187,7 @@ cd /tmp && wget https://github.com/the-djmaze/snappymail/releases/download/v<ver
 # GPG-verify (key 1016E47079145542F8BA133548208BA13290F3EB) before extracting
 sudo unzip -o -q snappymail-<ver>.zip -d /var/www/snappymail   # only index.php + data/VERSION are overwritten
 sudo chown -R www-data:www-data /var/www/snappymail
-# re-apply the tracked admin-OIDC patch (§7.7; upstream PR the-djmaze/snappymail#2066 — safe failure if it drifts)
+# re-apply the tracked admin-OIDC patch (§7.8; upstream PR the-djmaze/snappymail#2066 — safe failure if it drifts)
 cd /var/www/snappymail/snappymail/v/<ver>/app/libraries/RainLoop
 sudo patch -p1 < /path/to/ronzz-nextcloud/webmail/patches/snappymail-admin-oidc.patch
 sudo php -l Actions/Admin.php && sudo php -l ActionsAdmin.php
@@ -195,14 +200,61 @@ If `patch` fails (drift), the panel stays password-only until the patch is rebas
 - Nightly root cron `35 3 * * *`: `tar czf /var/backups/snappymail/data-<ts>.tgz -C /var/lib snappymail`, 7-day retention (covers settings, encrypted passwords, contacts; mailbox data itself lives on Migadu).
 - Plus OCI `daily-5d` boot-volume snapshots (crash-consistent).
 
-### 7.7 Admin panel OIDC bridge (runbook)
+### 7.7 Unified login — NC → Migadu password sync (app `nc_migadu_password_sync`)
+
+> **Model:** the NC account password *is* the Migadu mailbox password. Every NC password change — personal settings GUI, admin panel reset, `occ user:resetpassword`, email reset link, or user creation with a password — is pushed to the matching Migadu mailbox via the Migadu API. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `docs/IT/migadu-api.md` (server-side).
+
+**How it works:** `User::setPassword()` is the single funnel for all password-change paths → `PasswordUpdatedEvent` (plaintext) → app listener → `PasswordSyncProvider` (interface) → `MigaduProvider` → `PUT /v1/domains/{domain}/mailboxes/{local_part}` with Basic auth. The mailbox is the user's primary email (`user@ronzz.org` → `user`); users with no email, a foreign domain, or an id in `nc_migadu_password_sync_exclude` are skipped. `UserCreatedEvent` is also handled (syncs when a user is created with a password **and** the email is already set).
+
+**Install (manual, like dashboardlauncher — unsigned app):**
+
+```bash
+# 1. App files (source: webmail/nc-migadu-password-sync/ in this repo)
+docker cp webmail/nc-migadu-password-sync.tar.gz nextcloud:/tmp/
+docker exec nextcloud sh -c "cd /var/www/html/custom_apps && tar xzf /tmp/...tgz && mv nc-migadu-password-sync nc_migadu_password_sync && chown -R www-data:www-data nc_migadu_password_sync"
+# 2. Enable
+docker exec -u www-data nextcloud php occ app:enable nc_migadu_password_sync
+```
+
+**Config (system config, `config.php` — the API key must never go in the DB):**
+
+```bash
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_api_email --value=<migadu-account-email>   # Migadu account login (see server-side docs)
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_api_key    --value=<key>                  # Migadu Admin → My Account → API Keys
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_domain     --value=ronzz.org
+docker exec -u www-data nextcloud php occ config:system:set nc_migadu_password_sync_exclude     --value=ronzzshared            # dummy email, no mailbox
+```
+
+**Pre-flight check:**
+
+```bash
+docker exec -u www-data nextcloud php occ migadu:test
+#   OK — API credentials accepted, domain visible, mailboxes listed
+#   per-user lines: ron@ronzz.org → mailbox exists · ronzzshared → (excluded)
+```
+
+**Bootstrap existing mailboxes** (NC stores hashed passwords — the initial push happens on the *next* password change; there is no bulk "sync all" because the app never sees old passwords):
+
+- **Per user:** `docker exec -e OC_PASS='<new password>' -u www-data nextcloud php occ user:resetpassword <uid> --password-from-env` — fires the event → Migadu updated → webmail login works with the same password.
+- Or simply let each user change their own NC password via the dashboard GUI (same event).
+- Live mapping (2026-08-16): `ron@ronzz.org` → mailbox `ron@ronzz.org` (synced); `ronzzshared` → **excluded** (email `nextcloud-shared@ronzz.org` is a dummy for the shared-files account, no mailbox).
+
+**Failure handling (divergence is graceful):** the listener never breaks the NC password change. On Migadu API failure it retries 3× (1 s / 2 s backoff), then logs `migadu_sync: password sync FAILED for user <uid> …` at **error** level with user context (the password is never logged). The mailbox keeps the old password — webmail keeps working with it. **Recovery:** fix the cause, then re-run `occ user:resetpassword <uid>` (any new password re-fires the sync). Verify readiness with `occ migadu:test`.
+
+**Passwords policy:** a chosen password must satisfy both NC and Migadu constraints — the Migadu API rejects too-short/weak passwords (HTTP 4xx, logged as a sync failure), so use NC's default ≥ 8-char policy at minimum.
+
+**Provider portability (decided, #7):** all sync logic sits behind the `PasswordSyncProvider` interface; Migadu is one ~70-line driver. Moving mail hosts later = one new driver + mail migration (`imapsync`) — the migration, not the code, dominates.
+
+**Webmail side:** nothing to configure in SnappyMail — login validates against Migadu IMAP, so the synced password just works. One prerequisite: SnappyMail must resolve the mail domain — an explicit `domains/ronzz.org.json` (copy of `default.json`) is in place; keep data-dir files owned by `snappymail` (§7.3, §12). The SnappyMail admin panel lives on `webmail-admin.ronzz.org`, gated behind NC login via OIDC (§7.8).
+
+### 7.8 Admin panel OIDC bridge (runbook)
 
 > The SnappyMail admin panel (`webmail-admin.ronzz.org`) is gated behind
 > **Nextcloud login via OIDC** (NC = IdP through the `H2CK/oidc` app). This
 > replaces the old `/?admin` + nginx IP allowlist + static password model (§7.4).
 
 **Components** (live since 2026-08-16; source in `webmail/webmail-admin-oidc/`):
-NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, confidential, code flow) → sidecar `/opt/webmail-oidc` (FastAPI, systemd `webmail-oidc`, cookie `wmauth`, sessions in `/var/lib/webmail-oidc/sessions/`) → nginx `auth_request` on the `webmail-admin.ronzz.org` vhost → SnappyMail patch (`webmail/patches/snappymail-admin-oidc.patch`, re-applied on upgrade per §7.7).
+NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, confidential, code flow) → sidecar `/opt/webmail-oidc` (FastAPI, systemd `webmail-oidc`, cookie `wmauth`, sessions in `/var/lib/webmail-oidc/sessions/`) → nginx `auth_request` on the `webmail-admin.ronzz.org` vhost → SnappyMail patch (`webmail/patches/snappymail-admin-oidc.patch`, re-applied on upgrade per §7.5).
 
 **Config (server-side, secrets never committed):**
 - `/opt/webmail-oidc/webmail-oidc.env` (root 600): `WMA_CLIENT_ID`, `WMA_CLIENT_SECRET` (from `occ oidc:create`), `WMA_REDIRECT_URI=https://webmail-admin.ronzz.org/_oidc/callback`, `WMA_ALLOWED_UIDS=ron@ronzz.org` (comma-separated NC uids allowed to open the panel)
@@ -218,7 +270,7 @@ NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, c
 - Add a second admin: add their NC uid to `WMA_ALLOWED_UIDS` — they log in with their own NC credentials (and their own TOTP), no shared password
 - Reset everything: stop/disable `webmail-oidc`, remove `admin_panel.host` + `secfetch_allow`, revert the patch (restore from the upgrade zip), panel returns to the static-password model
 
-**Troubleshooting:** 403 "Disallowed Sec-Fetch" after login → `secfetch_allow` not set; 500 on callback → sidecar venv missing `cryptography` (`pip install cryptography`); redirect loop → `admin_panel.host` mismatch or `WMA_ALLOWED_UIDS` excludes the user; panel login form still shown → patch not applied (§7.7).
+**Troubleshooting:** 403 "Disallowed Sec-Fetch" after login → `secfetch_allow` not set; 500 on callback → sidecar venv missing `cryptography` (`pip install cryptography`); redirect loop → `admin_panel.host` mismatch or `WMA_ALLOWED_UIDS` excludes the user; panel login form still shown → patch not applied (§7.5).
 
 ## 8. Branding
 
@@ -232,8 +284,8 @@ NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, c
 
 | User | Role | Notes |
 |---|---|---|
-| `ron@ronzz.org` | Admin (group `admin`) | Primary admin account |
-| `ronzzshared` | Member | Dedicated **shared/team** account ("Ronzz Shared") |
+| `ron@ronzz.org` | Admin (group `admin`) | Primary admin account — **unified login**: NC password = Migadu mailbox password, synced (§7.7) |
+| `ronzzshared` | Member | Dedicated **shared/team** account ("Ronzz Shared") — **excluded** from mailbox sync: its email `nextcloud-shared@ronzz.org` is a dummy (no Migadu mailbox) |
 | `admin` | **Disabled** | Default install admin — disabled via `occ user:disable admin` (2026-08-14) |
 
 - **App passwords:** `occ user:add-app-password <user>` — use for scripts/clients instead of the master password.
@@ -308,15 +360,23 @@ docker exec -u www-data nextcloud php occ background:cron
 | Disk filling | Retention is `auto, 30`; check `df -h /`, `occ files:scan`, then grow/attach volume |
 | Fingerprint validation in OCI SDK | Real OCI fingerprints are **MD5 of the DER public key** (16 bytes); SDK regex accepts 16 groups |
 | SnappyMail first run → `mkdir() failed` (data dir) | `APP_DATA_FOLDER_PATH` in `include.php` **must end with `/`** — `/var/lib/snappymail/` (without it SnappyMail concatenates the install-marker dir name) |
-| `/?admin` → 403 from home, works elsewhere | Wrong — the nginx IP allowlist in `webmail.ronzz.org.conf` covers `185.5.129.0/24` (Lebara mobile CGNAT); if the admin's egress range changed, update the regex (or remove the gate — the panel stays password-protected) |
+| `/?admin` → 403 from home, works elsewhere | Obsolete since 2026-08-16 — the nginx IP allowlist was removed when the panel moved behind OIDC (§7.7/§7.8); see the next row |
 | Admin panel won't open after hardening | `allow_admin_panel = Off` in `application.ini` — flip to `On` (config is read per request, no reload) |
-| `/?admin` on webmail.ronzz.org opens the normal webmail, not the panel | **Expected since 2026-08-16** — the panel moved to `webmail-admin.ronzz.org` and is gated behind NC login via OIDC (§7.7) |
-| webmail-admin.ronzz.org → "Disallowed Sec-Fetch" 403 after login | `secfetch_allow = "site=same-site"` missing in `application.ini` (§7.7) |
+| `/?admin` on webmail.ronzz.org opens the normal webmail, not the panel | **Expected since 2026-08-16** — the panel moved to `webmail-admin.ronzz.org` and is gated behind NC login via OIDC (§7.8) |
+| webmail-admin.ronzz.org → "Disallowed Sec-Fetch" 403 after login | `secfetch_allow = "site=same-site"` missing in `application.ini` (§7.8) |
 | OIDC login bounces back to NC or loops | Check `WMA_ALLOWED_UIDS` in `/opt/webmail-oidc/webmail-oidc.env` includes the NC uid; `admin_panel.host` matches; `webmail-oidc` service active (`journalctl -u webmail-oidc`) |
 | Panel shows the old password login form | The admin-OIDC patch isn't applied — re-apply per §7.5 (upgrade overwrites it) |
 | Webmail can't reach Migadu | Check `domains/default.json` — `imap.migadu.com:993` / `smtp.migadu.com:465`, `type: 1` (implicit SSL), `verify_peer: true` |
 | Repeated mailbox-password prompts | SnappyMail decrypts stored passwords with Sodium — the FPM pool user `snappymail` must be able to read `/var/lib/snappymail/SALT.php` |
 | Webmail login fails for a bare username | `default_domain` in `application.ini` must be `ronzz.org` (or use the full `user@ronzz.org`) |
+| Login → "…has no domain configuration" / "Ce domaine n'est pas autorisé" | A `domains/*.json` is unreadable by the FPM user. The pool runs as `snappymail`; files under `/var/lib/snappymail` must be `snappymail:snappymail` (0600). A `www-data`-owned `default.json` makes `file_exists()` pass but `file_get_contents()` fail → empty config → domain rejected (hit 2026-08-16). Fix: `chown snappymail:snappymail …/domains/*.json` (and keep an explicit `ronzz.org.json` — SnappyMail only resolves a domain via its exact file, an alias, or the `default.json` wildcard) |
+| Login with an external email → "not whitelisted" / "Account is not allowed" | **By design** — webmail accepts @ronzz.org accounts only (`whiteList: "@ronzz.org"` in `default.json` + `ronzz.org.json`, §7.4). No IP gate needed; works off-premise |
+| Need to allow another domain | Edit `whiteList` in `domains/default.json` (e.g. `"@ronzz.org @other.org"` — space-separated) and add an explicit `domains/<domain>.json` if it needs custom IMAP/SMTP |
+| `occ migadu:test` → "Missing configuration" | Run the four `config:system:set` commands in §7.7 |
+| `occ migadu:test` → HTTP 401 | Migadu API email/key wrong or expired — regenerate the key in Migadu Admin → My Account → API Keys; the account email is the **Migadu login** (not necessarily the mailbox address; see server-side `docs/IT/migadu-api.md`) |
+| `occ migadu:test` → mailbox lookup HTTP 404 | The NC user's email has no Migadu mailbox — create the mailbox, or exclude the user (`nc_migadu_password_sync_exclude`) if the email is a dummy |
+| NC password change OK but webmail login fails | Sync failure — check the NC log for `migadu_sync: password sync FAILED …`; recover by re-running `occ user:resetpassword <uid>` (fires the event again). See §7.7 |
+| Email-recovery link flow seems to "forget" the password | Not a bug — NC's `setPassword()` funnel is the same for the reset link; the sync runs exactly like any other change (§7.7) |
 
 ## 13. Security notes
 
@@ -325,7 +385,8 @@ docker exec -u www-data nextcloud php occ background:cron
 - External link shares: password + expiry, never "can reshare".
 - Keep `admin` disabled; use per-user accounts + app passwords for automation.
 - All traffic TLS-terminated at nginx; Nextcloud itself listens only on loopback.
-- **Webmail:** admin password in `/root/snappymail-admin-password.txt` (root-only) and Migadu mailbox passwords in `/var/lib/snappymail` (Sodium-encrypted, 0700) — never commit either. The admin panel is gated behind **Nextcloud login via OIDC** (§7.7): the OIDC client secret lives in `/opt/webmail-oidc/webmail-oidc.env` (root 600, server-side), sessions in `/var/lib/webmail-oidc/sessions/` (0700). Bridge sessions are not revoked by NC logout (8 h TTL) — revoke by clearing `/var/lib/webmail-oidc/sessions/*`.
+- **Webmail:** admin password in `/root/snappymail-admin-password.txt` (root-only) and Migadu mailbox passwords in `/var/lib/snappymail` (Sodium-encrypted, 0700) — never commit either. The admin panel is gated behind **Nextcloud login via OIDC** (§7.8): the OIDC client secret lives in `/opt/webmail-oidc/webmail-oidc.env` (root 600, server-side), sessions in `/var/lib/webmail-oidc/sessions/` (0700). Bridge sessions are not revoked by NC logout (8 h TTL) — revoke by clearing `/var/lib/webmail-oidc/sessions/*`.
+- **Migadu API key:** `nc_migadu_password_sync_api_key` in `config.php` (inside the `nc_www` volume) grants **admin-level access to every ronzz.org mailbox** — treat it like the Cloudflare token: rotate via Migadu Admin → My Account → API Keys if it leaks. The key and API email are only covered by OCI snapshots (`nc_www` is not in the nightly tar, §10).
 
 ## 14. Local desktop client (admin's machine)
 
