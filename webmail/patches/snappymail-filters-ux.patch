@@ -1,0 +1,202 @@
+diff -ru a/app/localization/en/user.json b/app/localization/en/user.json
+--- a/app/localization/en/user.json
++++ b/app/localization/en/user.json
+@@ -376,8 +376,11 @@
+ 	"POPUPS_SIEVE_SCRIPT": {
+ 		"TITLE_CREATE": "Create Script",
+ 		"TITLE_EDIT": "Edit Script",
++		"TITLE_FILTERS": "Filters",
+ 		"BUTTON_ADD_FILTER": "Add a Filter",
+-		"BUTTON_RAW_SCRIPT": "Use Custom User Script",
++		"BUTTON_RAW_SCRIPT": "View generated script (preview)",
++		"BUTTON_ACTIVATE_NOW": "Activate now",
++		"INACTIVE_WARNING": "Your filters are saved but inactive.",
+ 		"CAPABILITY_LABEL": "Capabilities",
+ 		"CHANGES_NEED_TO_BE_SAVED_DESC": "These changes need to be saved to the server."
+ 	},
+@@ -445,6 +448,16 @@
+ 	"SETTINGS_FILTERS": {
+ 		"SIMPLE": "Simple",
+ 		"ADVANCED": "Advanced",
++		"SECTION_SIMPLE": "Email filters",
++		"BUTTON_MANAGE": "Manage / reorder",
++		"BUTTON_ACTIVATE": "Activate filters",
++		"BUTTON_DEACTIVATE_ALL": "Deactivate all",
++		"BUTTON_SWITCH_TO_SIMPLE": "Switch to email filters",
++		"STATUS_ACTIVE": "Filters active",
++		"STATUS_INACTIVE": "No active filter",
++		"STATUS_SCRIPT_ACTIVE": "Sieve script \"%NAME%\" active - email filters inactive",
++		"ADVANCED_MODE": "Advanced mode: Sieve scripts",
++		"HELP_ORDER": "Filters apply in the order shown, when mail arrives.",
+ 		"BUTTON_ADD_SCRIPT": "Add a Script",
+ 		"SUBNAME_MOVE_TO": "Move to \"%FOLDER%\"",
+ 		"SUBNAME_FORWARD_TO": "Forward to \"%EMAIL%\"",
+diff -ru a/app/localization/fr/user.json b/app/localization/fr/user.json
+--- a/app/localization/fr/user.json
++++ b/app/localization/fr/user.json
+@@ -376,8 +376,11 @@
+ 	"POPUPS_SIEVE_SCRIPT": {
+ 		"TITLE_CREATE": "Créer un script",
+ 		"TITLE_EDIT": "Éditer un script",
++		"TITLE_FILTERS": "Filtres",
+ 		"BUTTON_ADD_FILTER": "Ajouter un filtre",
+-		"BUTTON_RAW_SCRIPT": "Utiliser le script d'un utilisateur",
++		"BUTTON_RAW_SCRIPT": "Afficher le script généré (aperçu)",
++		"BUTTON_ACTIVATE_NOW": "Activer maintenant",
++		"INACTIVE_WARNING": "Vos filtres sont enregistrés mais inactifs.",
+ 		"CAPABILITY_LABEL": "Capacité",
+ 		"CHANGES_NEED_TO_BE_SAVED_DESC": "Ces changements doivent être enregistrés sur le serveur."
+ 	},
+@@ -445,6 +448,16 @@
+ 	"SETTINGS_FILTERS": {
+ 		"SIMPLE": "Simple",
+ 		"ADVANCED": "Avancé",
++		"SECTION_SIMPLE": "Filtres de messagerie",
++		"BUTTON_MANAGE": "Gérer / réordonner",
++		"BUTTON_ACTIVATE": "Activer les filtres",
++		"BUTTON_DEACTIVATE_ALL": "Tout désactiver",
++		"BUTTON_SWITCH_TO_SIMPLE": "Basculer vers les filtres de messagerie",
++		"STATUS_ACTIVE": "Filtres actifs",
++		"STATUS_INACTIVE": "Aucun filtre actif",
++		"STATUS_SCRIPT_ACTIVE": "Script Sieve « %NAME% » actif — filtres de messagerie inactifs",
++		"ADVANCED_MODE": "Mode avancé : scripts Sieve",
++		"HELP_ORDER": "Les filtres s'appliquent dans l'ordre affiché, à la réception du courrier.",
+ 		"BUTTON_ADD_SCRIPT": "Ajouter un Script",
+ 		"SUBNAME_MOVE_TO": "Déplacer vers \"%FOLDER%\"",
+ 		"SUBNAME_FORWARD_TO": "Faire suivre à \"%EMAIL%\"",
+diff -ru a/app/templates/Views/User/PopupsSieveScript.html b/app/templates/Views/User/PopupsSieveScript.html
+--- a/app/templates/Views/User/PopupsSieveScript.html
++++ b/app/templates/Views/User/PopupsSieveScript.html
+@@ -2,9 +2,10 @@
+ <header>
+ 	<a href="#" class="close" data-bind="click: $root.close">×</a>
+ 	<h3>
+-		<span data-i18n="POPUPS_SIEVE_SCRIPT/TITLE_CREATE" data-bind="visible: !exists()"></span>
+-		<span data-i18n="POPUPS_SIEVE_SCRIPT/TITLE_EDIT" data-bind="visible: exists"></span>
+-		<span data-bind="visible: exists">: <!-- ko text: name--><!-- /ko --></span>
++		<span data-i18n="POPUPS_SIEVE_SCRIPT/TITLE_FILTERS" data-bind="visible: allowFilters()"></span>
++		<span data-i18n="POPUPS_SIEVE_SCRIPT/TITLE_CREATE" data-bind="visible: !exists() && !allowFilters()"></span>
++		<span data-i18n="POPUPS_SIEVE_SCRIPT/TITLE_EDIT" data-bind="visible: exists() && !allowFilters()"></span>
++		<span data-bind="visible: exists() && !allowFilters()">: <!-- ko text: name--><!-- /ko --></span>
+ 	</h3>
+ </header>
+ <form class="modal-body" spellcheck="false">
+@@ -18,6 +19,11 @@
+ 
+ 	<div class="alert g-ui-user-select-none" data-bind="visible: hasChanges" data-icon="⚠" data-i18n="POPUPS_SIEVE_SCRIPT/CHANGES_NEED_TO_BE_SAVED_DESC"></div>
+ 	<div class="alert alert-error g-ui-user-select-none" style="white-space:pre" data-bind="visible: $root.errorText, text: $root.errorText" data-icon="⚠"></div>
++	<!-- [PATCH ronzz.org] manual activation: prompt to activate the visual script when inactive -->
++	<div class="alert g-ui-user-select-none" data-bind="visible: !active() && !$root.rawActive()" data-icon="⚠" data-i18n="POPUPS_SIEVE_SCRIPT/INACTIVE_WARNING"></div>
++	<div class="control-group" data-bind="visible: !active() && !$root.rawActive()">
++		<a class="btn" data-icon="⦿" data-bind="click: function () { window.Sieve.setActiveScript(name()); }" data-i18n="POPUPS_SIEVE_SCRIPT/BUTTON_ACTIVATE_NOW"></a>
++	</div>
+ 
+ 	<div class="control-group" data-bind="visible: $root.rawActive">
+ 		<details>
+diff -ru a/app/templates/Views/User/SettingsFilters.html b/app/templates/Views/User/SettingsFilters.html
+--- a/app/templates/Views/User/SettingsFilters.html
++++ b/app/templates/Views/User/SettingsFilters.html
+@@ -6,44 +6,62 @@
+ 	</div>
+ </div>
+ <div class="alert alert-error g-ui-user-select-none" data-bind="visible: serverError, text: serverErrorDesc" data-icon="⚠"></div>
+-<table class="table table-hover list-table g-ui-user-select-none">
+-	<colgroup>
+-		<col style="width: 30px">
+-		<col>
+-		<col style="width: 140px">
+-		<col style="width: 1em">
+-	</colgroup>
+-	<tbody>
+-		<tr class="script-item">
+-			<td style="border:0" class="e-action fontastic" data-bind="click: disableScripts, text: hasActive() ? '○' : '⦿'"></td>
+-			<td style="border:0" data-i18n="GLOBAL/INACTIVE">Inactive</td>
+-			<td style="border:0"></td>
+-			<td style="border:0"></td>
+-		</tr>
+-	</tbody>
+-	<tbody data-bind="foreach: scripts, i18nUpdate: scripts">
+-		<!-- ko if: allowFilters() -->
+-		<tr class="script-item">
+-			<td><div class="e-action fontastic" data-bind="visible: body, click: function (oScript) { $root.enableScript(oScript); }, text: active() ? '⦿' : '○'"></div></td>
+-			<td class="e-action script-name" data-i18n="SETTINGS_FILTERS/SIMPLE" data-bind="attr:{title: name}"></td>
+-			<td></td>
+-			<td></td>
+-		</tr>
+-		<tr><th colspan="4" data-i18n="SETTINGS_FILTERS/ADVANCED"></th></tr>
+-		<!-- /ko -->
+-		<!-- ko if: !allowFilters() -->
+-		<tr class="script-item">
+-			<td><div class="e-action fontastic" data-bind="visible: body, click: function (oScript) { $root.enableScript(oScript); }, text: active() ? '⦿' : '○'"></div></td>
+-			<td class="e-action script-name" data-bind="text: name"></td>
+-			<td>
+-				<a class="btn btn-small btn-danger button-confirm-delete" data-bind="css: {'delete-access': askDelete}, click: function(oScript) { $root.deleteScript(oScript); }"
+-					data-i18n="GLOBAL/ARE_YOU_SURE"></a>
+-			</td>
+-			<td>
+-				<span class="e-action fontastic" data-bind="visible: !askDelete() && !allowFilters(), click: function (oScript) { $root.scriptForDeletion(oScript); }">🗑</span>
+-			</td>
+-		</tr>
+-		<!-- /ko -->
+-	</tbody>
+-</table>
+-<a class="btn" data-bind="click: addScript" data-icon="✚" data-i18n="SETTINGS_FILTERS/BUTTON_ADD_SCRIPT"></a>
++<!-- [PATCH ronzz.org] filters UX: visual tier first, raw Sieve scripts behind "advanced mode" -->
++<div class="form-horizontal">
++	<div class="legend" data-i18n="SETTINGS_FILTERS/SECTION_SIMPLE"></div>
++	<div class="control-group">
++		<a class="btn" data-icon="✚" data-bind="click: function () { var s = (scripts() || []).find(function (x) { return x.name() === 'rainloop.user'; }); s ? editScript(s) : addScript(); }" data-i18n="POPUPS_SIEVE_SCRIPT/BUTTON_ADD_FILTER"></a>
++		<a class="btn" data-icon="✎" data-bind="click: function () { var s = (scripts() || []).find(function (x) { return x.name() === 'rainloop.user'; }); s && editScript(s); }" data-i18n="SETTINGS_FILTERS/BUTTON_MANAGE"></a>
++	</div>
++	<div class="control-group">
++		<span class="e-action fontastic" data-bind="text: hasActive() ? '●' : '○'"></span>&nbsp;
++		<span data-bind="visible: !hasActive(), text: rl.i18n('SETTINGS_FILTERS/STATUS_INACTIVE')"></span>
++		<span data-bind="visible: activeScriptName() === 'rainloop.user', text: rl.i18n('SETTINGS_FILTERS/STATUS_ACTIVE')"></span>
++		<span data-bind="visible: activeScriptName() && activeScriptName() !== 'rainloop.user', text: rl.i18n('SETTINGS_FILTERS/STATUS_SCRIPT_ACTIVE', { NAME: activeScriptName() })"></span>
++		&nbsp;&nbsp;
++		<a class="btn" data-bind="click: function () { if (!hasActive()) { var s = (scripts() || []).find(function (x) { return x.name() === 'rainloop.user' && x.body(); }); s && enableScript(s); } else if (activeScriptName() === 'rainloop.user') { disableScripts(); } else { var s2 = (scripts() || []).find(function (x) { return x.name() === 'rainloop.user' && x.body(); }); s2 ? enableScript(s2) : disableScripts(); } }">
++			<span data-bind="text: !hasActive() ? rl.i18n('SETTINGS_FILTERS/BUTTON_ACTIVATE') : (activeScriptName() === 'rainloop.user' ? rl.i18n('SETTINGS_FILTERS/BUTTON_DEACTIVATE_ALL') : rl.i18n('SETTINGS_FILTERS/BUTTON_SWITCH_TO_SIMPLE'))"></span>
++		</a>
++	</div>
++	<p class="help-block" data-i18n="SETTINGS_FILTERS/HELP_ORDER"></p>
++	<label class="checkbox">
++		<input type="checkbox" data-bind="checked: advancedMode">
++		<span data-i18n="SETTINGS_FILTERS/ADVANCED_MODE"></span>
++	</label>
++</div>
++<!-- Advanced tier: raw Sieve scripts. Never hidden while a raw script is active. -->
++<div class="form-horizontal" data-bind="visible: advancedMode() || scripts().some(function (s) { return s.name() !== 'rainloop.user' && s.active(); })">
++	<div class="legend" data-i18n="SETTINGS_FILTERS/ADVANCED"></div>
++	<table class="table table-hover list-table g-ui-user-select-none">
++		<colgroup>
++			<col style="width: 30px">
++			<col>
++			<col style="width: 140px">
++			<col style="width: 1em">
++		</colgroup>
++		<tbody>
++			<tr class="script-item">
++				<td style="border:0" class="e-action fontastic" data-bind="click: disableScripts, text: hasActive() ? '○' : '⦿'"></td>
++				<td style="border:0" data-i18n="GLOBAL/INACTIVE">Inactive</td>
++				<td style="border:0"></td>
++				<td style="border:0"></td>
++			</tr>
++		</tbody>
++		<tbody data-bind="foreach: scripts, i18nUpdate: scripts">
++			<!-- ko if: !allowFilters() -->
++			<tr class="script-item">
++				<td><div class="e-action fontastic" data-bind="visible: body, click: function (oScript) { $root.enableScript(oScript); }, text: active() ? '⦿' : '○'"></div></td>
++				<td class="e-action script-name" data-bind="text: name"></td>
++				<td>
++					<a class="btn btn-small btn-danger button-confirm-delete" data-bind="css: {'delete-access': askDelete}, click: function(oScript) { $root.deleteScript(oScript); }"
++						data-i18n="GLOBAL/ARE_YOU_SURE"></a>
++				</td>
++				<td>
++					<span class="e-action fontastic" data-bind="visible: !askDelete(), click: function (oScript) { $root.scriptForDeletion(oScript); }">🗑</span>
++				</td>
++			</tr>
++			<!-- /ko -->
++		</tbody>
++	</table>
++	<a class="btn" data-bind="click: addScript" data-icon="✚" data-i18n="SETTINGS_FILTERS/BUTTON_ADD_SCRIPT"></a>
++</div>

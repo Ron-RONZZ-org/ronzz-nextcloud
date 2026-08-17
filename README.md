@@ -146,7 +146,7 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 | **Stack** | PHP 8.3-FPM (dedicated `snappymail` pool), no DB, no Docker |
 | **Webroot** | `/var/www/snappymail` |
 | **Data dir** | `/var/lib/snappymail` — outside webroot (`APP_DATA_FOLDER_PATH`), user `snappymail`, 0700 |
-| **Mail server** | Migadu — IMAP `imap.migadu.com:993` (SSL), SMTP `smtp.migadu.com:465` (SSL), ManageSieve `managesieve.migadu.com:4190` |
+| **Mail server** | Migadu — IMAP `imap.migadu.com:993` (SSL), SMTP `smtp.migadu.com:465` (SSL), ManageSieve `imap.migadu.com:4190` (⚠ `managesieve.migadu.com` **does not exist** in DNS — was misconfigured until 2026-08-17, see §12) |
 
 ### 7.1 Architecture
 
@@ -173,7 +173,7 @@ Internet ──443──▶ host nginx (systemd) ──fastcgi──▶ PHP-FPM 
 - **PHP-FPM pool:** `/etc/php/8.3/fpm/pool.d/snappymail.conf` — user `snappymail`, socket `/run/php/snappymail-fpm.sock`, `pm.max_children = 4`.
 - **Config files** (the admin UI writes the same files — direct edits are fine):
   - `application.ini` (`/var/lib/snappymail/_data_/_default_/configs/`) — admin credentials, `default_domain = "ronzz.org"` (bare logins map to ronzz.org), `force_https = On`, title/loading branding.
-  - `domains/default.json` — Migadu defaults: IMAP 993 / SMTP 465 / Sieve 4190, `type: 1` (implicit SSL), **cert verification ON** (`verify_peer`/`verify_peer_name`).
+  - `domains/default.json` — Migadu defaults: IMAP 993 / SMTP 465 / Sieve `imap.migadu.com:4190` (⚠ not `managesieve.migadu.com` — that hostname has no DNS records and makes the Filtres tab fail with error 104), **cert verification ON** (`verify_peer`/`verify_peer_name`). TLS types: IMAP/SMTP `type: 1` (implicit SSL); **Sieve `type: 0` (STARTTLS — proven 2026-08-17)** — Migadu's ManageSieve proxy speaks plaintext-then-STARTTLS (`"STARTTLS"` capability, SASL only after TLS); implicit SSL (`type: 1`) fails the TLS handshake.
   - `domains/ronzz.org.json` — explicit per-domain config (copy of `default.json`; SnappyMail resolves a domain only via its exact file, an alias, or the `default.json` wildcard — see §13).
   - **Domain whitelist (2026-08-16):** both `default.json` and `ronzz.org.json` carry `"whiteList": "@ronzz.org"` — **login is restricted to @ronzz.org addresses** (bare logins get `default_domain` appended). Any other domain is rejected at the domain gate ("not whitelisted"); the shipped `disabled` list additionally blocks gmail/hotmail/outlook/qq/yahoo. No IP restriction — works off-premise (§7.4).
 - **Login model (decided, #7 — supersedes #3): unified password, synced from Nextcloud.** The Ronzz NC account password **is** the Migadu mailbox password: webmail login uses the same email + NC password, validated by SnappyMail against Migadu IMAP. No separate mailbox password, no SnappyMail-managed user administration (accounts self-provision on first login). The NC app `nc_migadu_password_sync` propagates every NC password change to the mailbox through the Migadu API — see §7.7. ⚠️ **Data-dir ownership pitfall:** everything under `/var/lib/snappymail` must be owned by the FPM pool user `snappymail` — a `www-data`-owned `domains/*.json` silently breaks login with *"has no domain configuration"* (fixed 2026-08-16; see §13).
@@ -199,9 +199,13 @@ sudo chown -R www-data:www-data /var/www/snappymail
 cd /var/www/snappymail/snappymail/v/<ver>/app/libraries/RainLoop
 sudo patch -p1 < /path/to/ronzz-nextcloud/webmail/patches/snappymail-admin-oidc.patch
 sudo php -l Actions/Admin.php && sudo php -l ActionsAdmin.php
+# re-apply the tracked filters-UX patch + JS fixup (§7.9 — both safe-fail on drift)
+cd /var/www/snappymail/snappymail/v/<ver>
+sudo patch -p1 < /path/to/ronzz-nextcloud/webmail/patches/snappymail-filters-ux.patch
+sudo python3 /path/to/ronzz-nextcloud/webmail/patches/fix-snappymail-appjs.py
 ```
 
-If `patch` fails (drift), the panel stays password-only until the patch is rebased — the OIDC gate simply doesn't open the panel (safe failure).
+If `patch` fails (drift), the panel stays password-only until the patch is rebased — the OIDC gate simply doesn't open the panel (safe failure). Same for the filters-UX patch: the Filtres page falls back to stock until rebased; the JS fixup refuses to run (`exit 1`) if the minified bundle drifted.
 
 ### 7.6 Backup
 
@@ -287,7 +291,33 @@ NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, c
 
 **Troubleshooting:** 403 "Disallowed Sec-Fetch" after login → `secfetch_allow` not set; 500 on callback → sidecar venv missing `cryptography` (`pip install cryptography`); redirect loop → `admin_panel.host` mismatch or `WMA_ALLOWED_UIDS` excludes the user; panel login form still shown → patch not applied (§7.5).
 
-### 7.9 Mailwatch — lighterbird-derived IMAP IDLE spam idler (issue #2)
+### 7.9 Filters UX — two-tier filter management (patch, 2026-08-17)
+
+> Users found the stock Filtres page confusing: it shows a **script list** ("Simple"
+> row + "Ajouter un Script"), while the visual builder only works for the script
+> literally named `rainloop.user`; any script created via "Ajouter un Script" is
+> raw-Sieve-only, and raw edits on `rainloop.user` are silently discarded on save
+> (the compiler regenerates the body). Artifacts: `webmail/patches/snappymail-filters-ux.patch`
+> + `webmail/patches/fix-snappymail-appjs.py` (re-applied on upgrade per §7.5).
+
+**Model (unchanged, from the protocol):** ManageSieve (RFC 5804) allows exactly **one active script** per mailbox. The visual builder always compiles into the single `rainloop.user` script; other scripts are raw-only. Visual filters and a raw script are therefore **mutually exclusive** — activating one displaces the other.
+
+**New UI (two tiers):**
+
+- **Filtres de messagerie** (primary): "Ajouter un filtre" / "Gérer / réordonner" open the visual builder directly; a status line shows *which* script is active (visual filters / a named Sieve script / none); one master button activates the visual filters or deactivates everything ("Basculer vers les filtres de messagerie" when a raw script is active).
+- **Mode avancé : scripts Sieve** (checkbox, default off, persisted per browser in `localStorage`): reveals the raw script list + "Ajouter un Script". **Never hidden while a raw script is active** — otherwise the user couldn't see/undo the script displacing their visual filters.
+- **In the editor popup** (visual mode): when the script is inactive, a banner + "Activer maintenant" button (`window.Sieve.setActiveScript(...)`) — save ≠ activate in this UI, so the prompt makes the gap visible. The raw toggle on `rainloop.user` is relabeled "Afficher le script généré (aperçu)" because hand-edits there are discarded on save.
+
+**Prerequisite — the error-104 fix (2026-08-17, deployed & verified):** the Filtres tab showed `ERROR 104` (ConnectionError) for TWO stacked reasons in `domains/{default,ronzz.org}.json`: (1) `Sieve.host` was `managesieve.migadu.com`, which **does not resolve in DNS** — Migadu's ManageSieve endpoint is `imap.migadu.com:4190` (greeting `"IMPLEMENTATION" "Sora ManageSieve Proxy"`); (2) `type: 1` (implicit SSL) is wrong — the proxy expects **STARTTLS** (`type: 0`; the plaintext greeting advertises `"STARTTLS"`, SASL appears only after the upgrade; implicit TLS dies with `WRONG_VERSION_NUMBER`). Verified end-to-end with the `test@ronzz.org` test mailbox: STARTTLS → `AUTHENTICATE "PLAIN"` → `OK "Authenticated"`, and the full visual-builder flow in the browser (create → save → activate → status "Filtres actifs"). Fix on the host:
+
+```bash
+# edit /var/lib/snappymail/_data_/_default_/configs/domains/{default,ronzz.org}.json
+# "Sieve": { "enabled": true, "host": "imap.migadu.com", "port": 4190, "type": 0 }
+sudo chown snappymail:snappymail /var/lib/snappymail/_data_/_default_/configs/domains/*.json   # §13 pitfall
+sudo systemctl restart php8.3-fpm    # or clear the SnappyMail cache from the admin panel
+```
+
+### 7.10 Mailwatch — lighterbird-derived IMAP IDLE spam idler (issue #2)
 
 > Client-independent spam/phishing protection for `@ronzz.org` mail: a headless
 > Python daemon that IDLEs on Migadu IMAP, classifies new mail (Bayesian +
@@ -325,7 +355,7 @@ sudo systemctl enable --now mailwatch
 
 - RFC 2177 IDLE on `imap.migadu.com:993` per account (29-min re-issue, exponential backoff); catch-up UNSEEN rescan as a missed-notification guard.
 - Spam → `UID MOVE` to `Junk` (~30 s after arrival); phishing-feed hits are moved and logged separately (`action=move_junk_phishing`).
-- Repeat-offender domain (default ≥3 spam hits / 14 days) → optional Sieve reject pushed to `managesieve.migadu.com:4190` (core `address` test only — the `envelope` extension is community-reported broken on Migadu; `auto_block.enabled` is off by default).
+- Repeat-offender domain (default ≥3 spam hits / 14 days) → optional Sieve reject pushed to `imap.migadu.com:4190` (core `address` test only — the `envelope` extension is community-reported broken on Migadu; `auto_block.enabled` is off by default). ⚠ Same hostname rule as §7.9: `managesieve.migadu.com` does not resolve.
 - **Two-signal training (bias-safe):** trains spam on Junk arrivals the daemon did NOT move (matched by Message-ID — UIDs change on MOVE) and trains ham on Junk→INBOX moves.  No self-confirmation.
 - Single-instance `flock` guard; SIGTERM/SIGINT graceful shutdown.
 
@@ -333,7 +363,7 @@ sudo systemctl enable --now mailwatch
 
 ## 8. Hesk — threads.ronzz.org (lightweight issue tracker)
 
-> Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics; email intake deferred (additive later). Source: `hesk/` in this repo; server-side notes: `docs/IT/ronzz-linux-server-2.md`.
+> Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics. Email intake live via the send-to-hesk redirector (§8.3). Source: `hesk/` in this repo; server-side notes: `docs/IT/ronzz-linux-server-2.md`.
 
 | | |
 |---|---|
@@ -360,9 +390,41 @@ sudo systemctl restart php8.3-fpm       # after pool changes
 sudo tail -f /var/log/nginx/threads*.log
 ```
 
-### 8.3 Email intake (deferred — do later when wanted)
+### 8.3 Email intake — send-to-hesk → hi@ronzz.org (LIVE 2026-08-17)
 
-Hesk IMAP fetching is purely additive: create `tickets@ronzz.org` in Migadu → Hesk admin → Settings → Email → IMAP fetching ON (`imap.migadu.com:993`, "keep a copy" ON) → cron line hitting `inc/mail/hesk_pop3.php?key=<URL_ACCESS_KEY>`. Requires `php-imap` (`apt install php8.3-imap` + pool restart).
+Email→ticket intake is **live**, using the personal-mailbox triage pattern:
+
+```
+[you move a support mail into ron@/send-to-hesk (any client)]
+  → mailwatch redirector (IDLE on send-to-hesk) appends it VERBATIM,
+    UNREAD, into hi@ronzz.org/INBOX  → deletes it from send-to-hesk
+  → Hesk IMAP fetch (cron */5, imap_keep=0) sees it as NEW mail
+    → ticket attributed to the ORIGINAL sender (headers intact)
+    → reply goes out From hi@ronzz.org (noreply_mail)
+```
+
+| Piece | Value |
+|---|---|
+| Source mailbox | `ron@ronzz.org` folder `send-to-hesk` (created 2026-08-17) |
+| Redirector | mailwatch `[accounts.redirect]` → `hi@ronzz.org/INBOX` (raw append, unread, delete-after-success) — see `mailwatch/README.md` "send-to-hesk redirector" |
+| Hesk IMAP | `imap.migadu.com:993`, user `hi@ronzz.org`, mailbox `INBOX`, `imap_keep=0` (delete after ticket), new-ticket notification per channel |
+| Hesk SMTP | `smtp.migadu.com:465` SSL, user `hi@ronzz.org`; `noreply_mail = hi@ronzz.org`, `noreply_name = Ronzz Helpdesk` |
+| Cron | root: `*/5 * * * * sudo -u hesk php /var/www/hesk/inc/mail/hesk_imap.php` → `/var/log/hesk-imap-fetch.log` |
+| Mailbox | `hi@ronzz.org` created via Migadu API (password in keyring for mailwatch + Hesk settings) |
+
+**Why this design** (see session notes): Hesk has ONE IMAP fetch config, so it
+watches `hi@ronzz.org` (a dedicated helpdesk mailbox); `ron@ronzz.org` stays
+personal. The redirector preserves the original From header (raw RFC822
+append), so tickets are attributed to the real requester and Hesk replies go
+to them, never back to you. Unread-by-design (Hesk fetches unseen only).
+Reply loop closes automatically: customer replies to hi@ → Hesk picks it up →
+same ticket (tracking ID). **Caveat: never read hi@ in a mail client — Hesk
+is its only reader.**
+
+**Deploy/upgrade notes:** redirector source is `mailwatch/src/mailwatch/redirector.py`
++ `client.append_message()`/`fetch_raw()` + watcher IDLE/catch-up wiring; deploy =
+`rsync mailwatch/src/ → /opt/mailwatch/src/` + `systemctl restart mailwatch` (see
+§mailwatch in `docs/IT/ronzz-linux-server-2.md`).
 
 ## 9. Branding
 
@@ -460,6 +522,7 @@ docker exec -u www-data nextcloud php occ background:cron
 | OIDC login bounces back to NC or loops | Check `WMA_ALLOWED_UIDS` in `/opt/webmail-oidc/webmail-oidc.env` includes the NC uid; `admin_panel.host` matches; `webmail-oidc` service active (`journalctl -u webmail-oidc`) |
 | Panel shows the old password login form | The admin-OIDC patch isn't applied — re-apply per §7.5 (upgrade overwrites it) |
 | Webmail can't reach Migadu | Check `domains/default.json` — `imap.migadu.com:993` / `smtp.migadu.com:465`, `type: 1` (implicit SSL), `verify_peer: true` |
+| Filtres tab → **ERROR 104** banner | ManageSieve connection failed. Root cause found & fixed 2026-08-17: (1) `Sieve.host` was `managesieve.migadu.com` — **that hostname does not resolve** (no A/AAAA records); Migadu's endpoint is `imap.migadu.com:4190` (greeting `"Sora ManageSieve Proxy"`). (2) `Sieve.type` must be **0 (STARTTLS)** — implicit SSL (`1`) fails the handshake. Fix both in `domains/{default,ronzz.org}.json`, keep `snappymail:snappymail` ownership, flush the SnappyMail cache / restart the FPM pool (§7.9) |
 | Repeated mailbox-password prompts | SnappyMail decrypts stored passwords with Sodium — the FPM pool user `snappymail` must be able to read `/var/lib/snappymail/SALT.php` |
 | Webmail login fails for a bare username | `default_domain` in `application.ini` must be `ronzz.org` (or use the full `user@ronzz.org`) |
 | Login → "…has no domain configuration" / "Ce domaine n'est pas autorisé" | A `domains/*.json` is unreadable by the FPM user. The pool runs as `snappymail`; files under `/var/lib/snappymail` must be `snappymail:snappymail` (0600). A `www-data`-owned `default.json` makes `file_exists()` pass but `file_get_contents()` fail → empty config → domain rejected (hit 2026-08-16). Fix: `chown snappymail:snappymail …/domains/*.json` (and keep an explicit `ronzz.org.json` — SnappyMail only resolves a domain via its exact file, an alias, or the `default.json` wildcard) |
