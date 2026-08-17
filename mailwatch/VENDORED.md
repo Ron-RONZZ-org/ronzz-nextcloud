@@ -24,7 +24,7 @@ surface minimal; provenance headers + this file prevent silent drift.
 | `email/imap/idle.py` | `folder` parameter added so the same manager watches INBOX and Junk |
 | `email/filters/spam_detect.py` | `lightercore.paths.config_dir` → `mailwatch.paths.config_dir` |
 | `email/filters/spam_tokens.json` | copied verbatim (2005 SpamAssassin seed) |
-| `email/filters/phishing.py` | import rewrite only (+ `phishing_brands.json` copied) |
+| `email/filters/phishing.py` | import rewrite + **feed fixes (2026-08-17)**: `follow_redirects=True` (OpenPhish/PhishTank answer 302), phishtank URL `https`, phishstats switched to the JSON API (`api.phishstats.info/api/phishing`, `_process_feed` gained a `json` format) — the old `phish_score.csv` is 404 (+ `phishing_brands.json` copied) |
 | `email/filters/spam_similarity.py` | `add_spam()` takes `from_addr` directly instead of querying the dropped `messages` table |
 | `email/filters/sieve.py` | import rewrite only |
 | `email/keyring.py` | rewritten against the `keyring` package directly (lighterbird delegated to `lighterllm`) |

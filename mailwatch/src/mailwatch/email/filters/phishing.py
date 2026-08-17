@@ -435,13 +435,16 @@ class PhishingFeedUpdater:
         },
         {
             "name": "phishtank",
-            "url": "http://data.phishtank.com/data/online-valid.csv",
+            "url": "https://data.phishtank.com/data/online-valid.csv",
             "format": "csv",
         },
         {
             "name": "phishstats",
-            "url": "https://phishstats.info/phish_score.csv",
-            "format": "csv",
+            # New JSON API (2026): phish_score.csv was retired.  Anonymous
+            # quota ~50 requests/day; mailwatch refreshes every
+            # feed_refresh_hours (default 6h → 4 requests/day).
+            "url": "https://api.phishstats.info/api/phishing?_sort=-id&_size=20000",
+            "format": "json",
         },
     ]
 
@@ -459,7 +462,9 @@ class PhishingFeedUpdater:
         totals: dict[str, int] = {}
         for feed in self.FEEDS:
             try:
-                resp = httpx.get(feed["url"], timeout=30)
+                # follow_redirects=True: several feeds (OpenPhish, PhishTank)
+                # answer with 302 and serve the data at the target.
+                resp = httpx.get(feed["url"], timeout=30, follow_redirects=True)
                 resp.raise_for_status()
                 count = self._process_feed(feed["name"], resp.text, feed["format"])
                 totals[feed["name"]] = count
@@ -477,12 +482,14 @@ class PhishingFeedUpdater:
         Args:
             name: Feed source name.
             text: Raw feed content.
-            fmt: ``"plain"`` (one URL per line) or ``"csv"``.
+            fmt: ``"plain"`` (one URL per line), ``"csv"``, or ``"json"``
+                 (JSON array of objects with a ``url`` field).
 
         Returns:
             Number of domains inserted/updated.
         """
         import csv
+        import json as json_lib
         from io import StringIO
 
         domains: set[str] = set()
@@ -496,6 +503,21 @@ class PhishingFeedUpdater:
                         domain = _extract_domain(url)
                         if domain:
                             domains.add(domain)
+        elif fmt == "json":
+            try:
+                entries = json_lib.loads(text)
+            except ValueError:
+                return 0
+            if not isinstance(entries, list):
+                return 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                url = str(entry.get("url", "")).strip()
+                if url:
+                    domain = _extract_domain(url)
+                    if domain:
+                        domains.add(domain)
         else:
             for line in text.splitlines():
                 line = line.strip()
