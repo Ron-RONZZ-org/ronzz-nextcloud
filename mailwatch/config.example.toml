@@ -1,0 +1,53 @@
+# mailwatch configuration — copy to /etc/mailwatch/config.toml and edit.
+#
+# Passwords are NOT stored here — set them in the system keyring:
+#     mailwatch password set me@ronzz.org
+
+[daemon]
+# Classify + log only; never move messages or push Sieve rules.
+dry_run = false
+log_level = "INFO"
+# Refresh phishing feeds every N hours (0 = disabled).
+feed_refresh_hours = 6
+# Spam threshold for the combined Bayesian/similarity score.
+spam_threshold = 0.9
+# Catch-up UNSEEN scan interval in seconds (guards missed IDLE events).
+catch_up_scan_seconds = 300
+# Junk folder name on the server (Migadu uses "Junk").
+junk_folder = "Junk"
+
+[daemon.training]
+# Two-signal continuous training on the Junk folder (issue #2).
+enabled = true
+# Reconciliation scan interval in seconds (detects Junk→INBOX ham moves).
+scan_interval_seconds = 120
+# Train spam on Junk arrivals NOT moved by the daemon (bias guard).
+train_spam_on_junk_arrival = true
+# Train ham when a message moves from Junk back to INBOX.
+train_ham_on_junk_to_inbox = true
+
+[daemon.auto_block]
+# Push Sieve reject rules for repeat-offender domains (optional).
+enabled = false
+# A domain is blocked after this many spam classifications.
+hits_threshold = 3
+# Only count hits within this window (days).
+window_days = 14
+# Sieve script name on the server (per account).
+script_name = "mailwatch_blocks"
+
+[[accounts]]
+# Account email — the keyring key for the password.
+email = "me@ronzz.org"
+# Migadu defaults:
+imap_host = "imap.migadu.com"
+imap_port = 993
+imap_use_ssl = true
+# Leave empty to use the email as the IMAP username.
+username = ""
+# Per-account Junk override (defaults to daemon.junk_folder).
+junk_folder = ""
+# ManageSieve for auto-block (only needed if daemon.auto_block.enabled).
+sieve_host = "managesieve.migadu.com"
+sieve_port = 4190
+sieve_use_tls = true

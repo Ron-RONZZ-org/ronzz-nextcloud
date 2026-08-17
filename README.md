@@ -279,6 +279,50 @@ NC `oidc` app v2.0.7 (IdP) → OIDC client `webmail-admin` (`occ oidc:create`, c
 
 **Troubleshooting:** 403 "Disallowed Sec-Fetch" after login → `secfetch_allow` not set; 500 on callback → sidecar venv missing `cryptography` (`pip install cryptography`); redirect loop → `admin_panel.host` mismatch or `WMA_ALLOWED_UIDS` excludes the user; panel login form still shown → patch not applied (§7.5).
 
+### 7.9 Mailwatch — lighterbird-derived IMAP IDLE spam idler (issue #2)
+
+> Client-independent spam/phishing protection for `@ronzz.org` mail: a headless
+> Python daemon that IDLEs on Migadu IMAP, classifies new mail (Bayesian +
+> phishing feeds + MinHash similarity, all vendored from the discontinued
+> lighterbird), MOVE's spam to Junk (visible to every client), optionally pushes
+> Sieve reject rules for repeat-offender domains, and trains itself from
+> Junk-folder activity.  Backend piece of the webmail master issue #3.
+
+| | |
+|---|---|
+| **Source** | `mailwatch/` in this repo (issue #2) — daemon only, no UI |
+| **Scope** | Classification sidecar only — deliberately does NOT sync/search/send (SnappyMail owns those) |
+| **Runtime** | Python 3.11+, systemd unit (`mailwatch/systemd/mailwatch.service`), venv `/opt/mailwatch/venv` |
+| **Config** | `/etc/mailwatch/config.toml` — accounts + thresholds (see `mailwatch/config.example.toml`) |
+| **Credentials** | System keyring per account (`mailwatch password set <email>`) — with #7's unified login, the NC password IS the mailbox password |
+| **State** | `/var/lib/mailwatch/mailwatch.db` (phishing feeds, similarity corpus, training feedback, daemon-move exclusions) |
+| **Audit** | JSON-lines at `/var/lib/mailwatch/audit.jsonl` — one line per classification/action |
+
+**Deployment (applies issue #2's systemd decision):**
+
+```bash
+sudo useradd --system --home /var/lib/mailwatch --shell /usr/sbin/nologin mailwatch
+sudo mkdir -p /opt/mailwatch /var/lib/mailwatch /etc/mailwatch && sudo chown mailwatch:mailwatch /var/lib/mailwatch
+sudo python3 -m venv /opt/mailwatch/venv
+sudo /opt/mailwatch/venv/bin/pip install /opt/mailwatch   # from the mailwatch/ source
+sudo cp /opt/mailwatch/config.example.toml /etc/mailwatch/config.toml  # then edit accounts
+sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch password set me@ronzz.org
+sudo cp /opt/mailwatch/systemd/mailwatch.service /etc/systemd/system/ && sudo systemctl daemon-reload
+sudo systemctl enable --now mailwatch
+```
+
+**Dry-run first:** `sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml --once --dry-run` — classify + audit only, no moves.
+
+**Key behaviors (as designed in issue #2):**
+
+- RFC 2177 IDLE on `imap.migadu.com:993` per account (29-min re-issue, exponential backoff); catch-up UNSEEN rescan as a missed-notification guard.
+- Spam → `UID MOVE` to `Junk` (~30 s after arrival); phishing-feed hits are moved and logged separately (`action=move_junk_phishing`).
+- Repeat-offender domain (default ≥3 spam hits / 14 days) → optional Sieve reject pushed to `managesieve.migadu.com:4190` (core `address` test only — the `envelope` extension is community-reported broken on Migadu; `auto_block.enabled` is off by default).
+- **Two-signal training (bias-safe):** trains spam on Junk arrivals the daemon did NOT move (matched by Message-ID — UIDs change on MOVE) and trains ham on Junk→INBOX moves.  No self-confirmation.
+- Single-instance `flock` guard; SIGTERM/SIGINT graceful shutdown.
+
+**Ops notes:** upgrade = `pip install --upgrade /opt/mailwatch` + restart unit; check health via `systemctl status mailwatch` + tail `/var/lib/mailwatch/audit.jsonl`; phishing feeds refresh every `feed_refresh_hours` (default 6 h).
+
 ## 8. Branding
 
 - Name: **Ronzz.ORG** · Slogan: **Where miracles happen.**

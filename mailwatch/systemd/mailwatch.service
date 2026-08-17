@@ -1,0 +1,31 @@
+[Unit]
+Description=mailwatch — IMAP IDLE spam/idler daemon for Migadu
+Documentation=https://github.com/Ron-RONZZ-org/ronzz-nextcloud/blob/main/mailwatch/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mailwatch
+Group=mailwatch
+ExecStart=/opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml
+Restart=on-failure
+RestartSec=10
+# Standard output goes to the journal; audit trail is written separately.
+StandardOutput=journal
+StandardError=journal
+# Hardening (outbound-only daemon: no exposed ports).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mailwatch /var/log/mailwatch
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
