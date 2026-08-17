@@ -1,0 +1,79 @@
+--- a/admin/index.php
++++ b/admin/index.php
+@@ -41,12 +41,14 @@
+         do_backup_email_verification();
+         break;
+     case 'login':
++    	hesk_oidc_auto_login();
+     	print_login();
+         break;
+     case 'logout':
+     	logout();
+         break;
+     default:
++    	hesk_oidc_auto_login();
+     	hesk_autoLogin();
+     	print_login();
+ }
+@@ -56,6 +58,61 @@
+ exit();
+ 
+ /*** START FUNCTIONS ***/
++
++/**
++ * [PATCH ronzz.org] OIDC SSO via nginx auth_request (threads.ronzz.org)
++ *
++ * nginx validates the Nextcloud session against the hesk-oidc sidecar and
++ * forwards the authenticated NC uid as X-Hesk-User (client-supplied values
++ * are overridden at nginx). If that uid matches an existing Hesk staff
++ * account, log that user in directly and skip the password form.
++ *
++ * Runs on both the 'login' and 'default' actions (hesk_isLoggedIn redirects
++ * to index.php?a=login). Safe failure: no header, non-matching user, or
++ * wrong host -> normal login form.
++ */
++function hesk_oidc_auto_login()
++{
++	global $hesk_settings;
++
++	// Trusted header, only meaningful on the dedicated Hesk host
++	if (empty($_SERVER['HTTP_X_HESK_USER']))
++	{
++		return;
++	}
++
++	// Defense in depth: honor the header only on threads.ronzz.org
++	$host = strtolower(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '');
++	if (strpos($host, 'threads.ronzz.org') === false)
++	{
++		return;
++	}
++
++	// Already logged in? Nothing to do
++	if (!empty($_SESSION['id']))
++	{
++		return;
++	}
++
++	// Only staff accounts can log in via the panel
++	$sso_user = hesk_input(trim($_SERVER['HTTP_X_HESK_USER']));
++
++	$result = hesk_dbQuery("SELECT * FROM `".hesk_dbEscape($hesk_settings['db_pfix'])."users` WHERE `user` = '".hesk_dbEscape($sso_user)."' LIMIT 1");
++	if (hesk_dbNumRows($result) != 1)
++	{
++		return; // no matching staff account -> normal login form
++	}
++
++	$user_row = hesk_dbFetchAssoc($result);
++
++	// Log the user in (same path as a successful password login)
++	process_successful_login($user_row);
++
++	/* Redirect to the destination page */
++	header('Location: ' . hesk_verifyGoto() );
++	exit();
++}
++
+ function do_login()
+ {
+ 	global $hesk_settings, $hesklang;
