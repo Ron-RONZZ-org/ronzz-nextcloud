@@ -153,11 +153,13 @@ def test_junk_to_inbox_trains_ham(db, audit, account):
     )
     idler._reconcile(client1, account)
 
-    # Second scan: user moved it to INBOX.
+    # Second scan: user moved it to INBOX.  UIDs change on MOVE (7 in
+    # Junk → 99 in INBOX) — the ham fetch must resolve the current
+    # INBOX UID by Message-ID.
     client2 = FakeTrainingClient(
         junk={},
-        inbox={7: "mid-7@example.com"},
-        bodies={("INBOX", 7): ("Important", "please read this carefully")},
+        inbox={99: "mid-7@example.com"},
+        bodies={("INBOX", 99): ("Important", "please read this carefully")},
     )
     summary = idler._reconcile(client2, account)
     assert summary["ham"] == 1

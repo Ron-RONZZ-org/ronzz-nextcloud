@@ -102,14 +102,19 @@ class TrainingIdler:
                 summary["spam"] += 1
 
         # ── Ham signal: message left Junk AND is now in INBOX ─────────
-        inbox_ids = set(current_inbox.values())
+        # UIDs change on MOVE, so resolve the message's *current* INBOX
+        # UID by Message-ID before fetching.
+        inbox_uids: dict[str, int] = {}
+        for inbox_uid, message_id in current_inbox.items():
+            if message_id:
+                inbox_uids[message_id] = inbox_uid
+
         for uid, message_id in prev.items():
             if uid in current_junk:
                 continue  # still in Junk
-            if (
-                message_id
-                and message_id in inbox_ids
-                and self._train_ham(client, account, uid, message_id)
+            inbox_uid = inbox_uids.get(message_id)
+            if inbox_uid is not None and self._train_ham(
+                client, account, inbox_uid, message_id
             ):
                 summary["ham"] += 1
 

@@ -340,22 +340,19 @@ def run(args: argparse.Namespace) -> None:
                 "waiting for the training idler…"
             )
 
-            def trained_spam() -> list[dict[str, Any]]:
-                return _db_rows(Path(args.db), "spam_feedback", ham_id)
+            def trained_spam() -> bool:
+                rows = _db_rows(Path(args.db), "spam_feedback", ham_id)
+                return any(
+                    r.get("feedback") == "spam" and r.get("source") == "junk_idler"
+                    for r in rows
+                )
 
-            rows = poll(
+            poll(
                 "spam_feedback spam row",
                 timeout=args.timeout,
                 interval=5,
                 fn=trained_spam,
             )
-            if not any(
-                r.get("feedback") == "spam" and r.get("source") == "junk_idler"
-                for r in rows
-            ):
-                raise StepFailed(
-                    "no spam_feedback row with feedback=spam source=junk_idler"
-                )
             log("   trained spam (source=junk_idler)")
 
         step("3. Spam training (non-daemon Junk arrival)", step3)
@@ -373,22 +370,19 @@ def run(args: argparse.Namespace) -> None:
                 f"reconciliation scan (up to ~{3 * scan_interval}s)…"
             )
 
-            def trained_ham() -> list[dict[str, Any]]:
-                return _db_rows(Path(args.db), "spam_feedback", ham_id)
+            def trained_ham() -> bool:
+                rows = _db_rows(Path(args.db), "spam_feedback", ham_id)
+                return any(
+                    r.get("feedback") == "ham" and r.get("source") == "junk_to_inbox"
+                    for r in rows
+                )
 
-            rows = poll(
+            poll(
                 "spam_feedback ham row",
                 timeout=max(args.timeout, 3 * scan_interval + 30),
                 interval=10,
                 fn=trained_ham,
             )
-            if not any(
-                r.get("feedback") == "ham" and r.get("source") == "junk_to_inbox"
-                for r in rows
-            ):
-                raise StepFailed(
-                    "no spam_feedback row with feedback=ham source=junk_to_inbox"
-                )
             log("   trained ham (source=junk_to_inbox)")
 
         step("4. Ham training (Junk -> INBOX)", step4)
