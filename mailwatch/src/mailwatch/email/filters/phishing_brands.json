@@ -1,0 +1,22 @@
+{
+  "paypal": ["paypal.com", "paypal.de", "paypal.co.uk", "paypal.fr", "paypal.com.au"],
+  "amazon": ["amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.ca", "amazon.co.jp", "amazon.it", "amazon.es"],
+  "apple": ["apple.com", "icloud.com", "me.com"],
+  "netflix": ["netflix.com", "nflximg.com"],
+  "microsoft": ["microsoft.com", "outlook.com", "hotmail.com", "live.com", "msn.com"],
+  "google": ["google.com", "gmail.com", "youtube.com", "blogger.com"],
+  "facebook": ["facebook.com", "fb.com", "meta.com", "messenger.com"],
+  "linkedin": ["linkedin.com", "linkedin.net"],
+  "github": ["github.com"],
+  "chase": ["chase.com"],
+  "wellsfargo": ["wellsfargo.com"],
+  "bankofamerica": ["bankofamerica.com"],
+  "amex": ["americanexpress.com"],
+  "visa": ["visa.com"],
+  "mastercard": ["mastercard.com"],
+  "paypal-security": ["paypal.com"],
+  "amazon-security": ["amazon.com"],
+  "google-security": ["google.com"],
+  "microsoft-security": ["microsoft.com"],
+  "apple-security": ["apple.com"]
+}
