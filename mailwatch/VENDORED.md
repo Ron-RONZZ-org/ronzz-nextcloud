@@ -21,7 +21,7 @@ surface minimal; provenance headers + this file prevent silent drift.
 | `email/imap/helpers.py` | import rewrite only |
 | `email/imap/parser.py` | import rewrite only |
 | `email/imap/client.py` | trimmed: dropped full sync engine (`sync_folder`), attachment storage, folder CRUD, message deletion, DB-backed lazy fetch; added slim `fetch_uids()` and `fetch_message_ids()` |
-| `email/imap/idle.py` | `folder` parameter added so the same manager watches INBOX and Junk |
+| `email/imap/idle.py` | `folder` parameter added so the same manager watches INBOX and Junk; **IDLE entry fixed for Python 3.11+ (2026-08-17)**: imaplib's `_command("IDLE")` raises `KeyError` (`IDLE` absent from `imaplib.Commands`) and `IMAP4` has no `fileno()` — IDLE is now entered by sending the command manually and `select` polls `conn.sock` (both verified against live `imap.migadu.com`) |
 | `email/filters/spam_detect.py` | `lightercore.paths.config_dir` → `mailwatch.paths.config_dir` |
 | `email/filters/spam_tokens.json` | copied verbatim (2005 SpamAssassin seed) |
 | `email/filters/phishing.py` | import rewrite + **feed fixes (2026-08-17)**: `follow_redirects=True` (OpenPhish/PhishTank answer 302), phishtank URL `https`, phishstats switched to the JSON API (`api.phishstats.info/api/phishing`, `_process_feed` gained a `json` format) — the old `phish_score.csv` is 404 (+ `phishing_brands.json` copied) |

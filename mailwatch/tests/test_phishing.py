@@ -299,12 +299,18 @@ class TestPhishingFeedUpdater:
         )
         count = updater._process_feed("phishstats", json_data, "json")
         assert count == 2
-        assert db.execute_one(
-            "SELECT * FROM phishing_feeds WHERE domain = 'evil.example.com'"
-        ) is not None
-        assert db.execute_one(
-            "SELECT * FROM phishing_feeds WHERE domain = 'fake.bank.example.net'"
-        ) is not None
+        assert (
+            db.execute_one(
+                "SELECT * FROM phishing_feeds WHERE domain = 'evil.example.com'"
+            )
+            is not None
+        )
+        assert (
+            db.execute_one(
+                "SELECT * FROM phishing_feeds WHERE domain = 'fake.bank.example.net'"
+            )
+            is not None
+        )
 
     def test_process_json_feed_invalid(self, db):
         """Malformed JSON should yield 0 without raising."""

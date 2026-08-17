@@ -224,8 +224,13 @@ class IMAPIdleThread:
 
             while not self._stop_event.is_set():
                 # ── Enter IDLE (RFC 2177) ──────────────────────────────
+                # imaplib has NO IDLE support: ``_command("IDLE")`` raises
+                # KeyError because "IDLE" is absent from imaplib.Commands
+                # (and IMAP4 has no fileno() for select).  Send the command
+                # manually and poll the raw socket.
                 try:
-                    tag = client.conn._command("IDLE")
+                    tag = client.conn._new_tag()
+                    client.conn.send(f"{tag} IDLE\r\n".encode("ascii"))
                 except Exception:
                     logger.warning(
                         "[idle] Failed to enter IDLE for %s/%s",
@@ -244,8 +249,12 @@ class IMAPIdleThread:
 
                     remaining = min(_IDLE_TIMEOUT - elapsed, _IDLE_POLL_INTERVAL)
                     try:
-                        r, _, _ = select.select([client.conn], [], [], remaining)
-                    except TypeError:
+                        # Poll the raw socket (imaplib.IMAP4 has no
+                        # fileno()); for SSL connections the underlying
+                        # socket becomes readable when a TLS record with
+                        # server data arrives.
+                        r, _, _ = select.select([client.conn.sock], [], [], remaining)
+                    except (TypeError, AttributeError):
                         # select() on SSL sockets may raise TypeError in some edge cases
                         break
 
