@@ -2,8 +2,14 @@
 
 Replaces ``lightercore.paths`` in the vendored lighterbird modules.
 
-Config dir holds user-facing state (Bayesian per-user tokens,
-Sieve scripts, blocklists).  Data dir holds the SQLite database.
+``config_dir`` holds *classifier state* (Bayesian per-user tokens) —
+NOT the config file, whose path is passed explicitly via ``--config``.
+It must be writable at runtime: on systemd deployments point
+``MAILWATCH_CONFIG_DIR`` at the data dir (e.g. ``/var/lib/mailwatch``),
+never ``/etc`` (read-only under ``ProtectSystem=strict``).
+
+``data_dir`` holds the SQLite database + audit log.
+
 Both are overridable via environment variables so tests and the
 systemd service can place them anywhere.
 """
