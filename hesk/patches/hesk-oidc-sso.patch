@@ -15,7 +15,7 @@
      	hesk_autoLogin();
      	print_login();
  }
-@@ -56,6 +58,61 @@
+@@ -56,6 +58,67 @@
  exit();
  
  /*** START FUNCTIONS ***/
@@ -68,6 +68,12 @@
 +
 +	// Log the user in (same path as a successful password login)
 +	process_successful_login($user_row);
++	// [PATCH ronzz.org] SSO session: skip the Hesk elevator (re-auth).
++	// nginx re-validates the Nextcloud session (incl. TOTP) on every /admin/
++	// request, so the periodic Hesk password re-ask is redundant for SSO
++	// users; hesk_check_user_elevation() honors this flag.
++	$_SESSION['sso'] = true;
++
 +
 +	/* Redirect to the destination page */
 +	header('Location: ' . hesk_verifyGoto() );
@@ -77,3 +83,20 @@
  function do_login()
  {
  	global $hesk_settings, $hesklang;
+--- a/inc/common.inc.php
++++ b/inc/common.inc.php
+@@ -3367,6 +3367,14 @@
+ // Checks the user if they're elevated and not expired. If not, redirect to the elevator
+ function hesk_check_user_elevation($post_elevation_redirect, $customer_side = false) {
+ 
++    // [PATCH ronzz.org] SSO sessions (hesk-oidc) are always elevated: nginx
++    // re-validates the Nextcloud session (incl. TOTP) on every /admin/ request,
++    // so the elevator's periodic password re-auth would dead-end users whose
++    // Hesk password is unknown (auto-login). Password-form logins keep stock.
++    if (!$customer_side && !empty($_SESSION['sso'])) {
++        return true;
++    }
++
+     if ($customer_side && (!isset($_SESSION['customer']['elevated']) || $_SESSION['customer']['elevated'] < new DateTime())) {
+         $_SESSION['customer']['elevated'] = null;
+         $_SESSION['customer']['elevator_target'] = $post_elevation_redirect;

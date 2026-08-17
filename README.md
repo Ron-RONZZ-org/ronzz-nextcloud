@@ -379,6 +379,7 @@ Same OIDC pattern as §7.8, but **auto-login** instead of a shared admin gate:
 - NC `H2CK/oidc` client `hesk` (confidential, code flow) → sidecar `/opt/hesk-oidc/` (FastAPI, systemd `hesk-oidc` :8016, cookie `heskauth`, `HESK_ALLOWED_UIDS=ron@ronzz.org,ronzzshared`) → nginx `auth_request` on `/admin/` only → **patched `admin/index.php`** (`hesk_oidc_auto_login()`, `hesk/patches/hesk-oidc-sso.patch` — CRLF-aware, re-apply on upgrade, safe failure = password form)
 - SSO lookup matches Hesk staff `user` = **NC uid** exactly (e.g. `ron@ronzz.org`); add a staff member = create the Hesk user with the NC uid + add to `HESK_ALLOWED_UIDS`
 - **SSO bypasses Hesk-side MFA — NC login (incl. TOTP) is the single second factor** (same tradeoff as §7.8)
+- **Elevator skipped for SSO sessions (2026-08-17):** Hesk's sensitive pages (Team, MFA mgmt, customer mgmt) normally re-ask the Hesk password via `admin/elevator.php` every `elevator_duration` (60 min) — a dead end for SSO users whose Hesk password is unknown by design. Patch now sets `$_SESSION['sso']` at auto-login and `hesk_check_user_elevation()` (same patch, second file `inc/common.inc.php`) exempts SSO sessions; nginx re-validates the NC session (incl. TOTP) on every `/admin/` request. Password-form fallback keeps stock elevator.
 - Artifacts: `hesk/threads-oidc/` (sidecar fork + systemd unit + nginx vhost + runbook), `hesk/patches/hesk-oidc-sso.patch`
 
 ### 8.2 Ops

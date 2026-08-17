@@ -26,7 +26,9 @@ the session notes; this directory holds the deployable artifacts.
 hesk/
 ├── README.md                      ← this runbook
 ├── patches/
-│   ├── hesk-oidc-sso.patch        ← admin/index.php OIDC auto-login (CRLF-aware)
+│   ├── hesk-oidc-sso.patch        ← admin/index.php OIDC auto-login (CRLF-aware) +
+│   │                                 inc/common.inc.php: skip the Hesk "elevator"
+│   │                                 (re-auth) for SSO sessions
 │   ├── hesk-reply-embed.patch     ← admin_reply_ticket.php: embed reply text in
 │   │                                 the notification email (natural replies)
 │   └── hesk-subjects.patch        ← language/en/text.php: natural email subjects
@@ -129,18 +131,32 @@ curl http://127.0.0.1:8016/_oidc/health   # {"ok": true}
 ### 6. Hesk SSO patch
 
 ```bash
-# Run from the Hesk ROOT (/var/www/hesk), not admin/ — the patch path is a/admin/index.php
+# Run from the Hesk ROOT (/var/www/hesk), not admin/ — the patch paths are a/admin/index.php + a/inc/common.inc.php
 cd /var/www/hesk
 sudo cp admin/index.php admin/index.php.upstream-bak && sudo chown www-data:www-data admin/index.php.upstream-bak
-sudo -u www-data patch -p1 < /var/www/hesk/patches/hesk-oidc-sso.patch
-sudo -u www-data php -l admin/index.php   # "No syntax errors detected"
+sudo cp inc/common.inc.php inc/common.inc.php.upstream-bak && sudo chown www-data:www-data inc/common.inc.php.upstream-bak
+sudo -u www-data patch -p1 < /var/www/hesk/patches/hesk-oidc-sso.patch   # needs write perms: run as root if the files are hesk-owned
+sudo -u hesk php -l admin/index.php && sudo -u hesk php -l inc/common.inc.php   # "No syntax errors detected"
 ```
 
 > The patch is CRLF-aware and verified byte-for-byte against the upstream
-> `admin/index.php` (both `login` and `default` actions hook
-> `hesk_oidc_auto_login()`). If `patch` reports "different line endings", the
-> Hesk release changed the file — regenerate with `diff -u` against the new
-> source following the pattern in `hesk/patches/hesk-oidc-sso.patch`.
+> `admin/index.php` + `inc/common.inc.php` (both `login` and `default` actions
+> hook `hesk_oidc_auto_login()`; the elevator gate in
+> `hesk_check_user_elevation()` honors the `sso` session flag). If `patch`
+> reports "different line endings", the Hesk release changed the file —
+> regenerate with `diff -u` against the new source following the pattern in
+> `hesk/patches/hesk-oidc-sso.patch`.
+
+**Elevator behavior (what the `inc/common.inc.php` hunk does):** Hesk asks
+sensitive pages (Team, MFA management, customer management/import) to
+re-enter the Hesk password ("elevator", `admin/elevator.php`) whenever the
+`elevated` session marker expired (`elevator_duration`, default 60 min). That
+is a dead end for SSO users whose Hesk password is unknown by design. The
+patch marks SSO sessions (`$_SESSION['sso'] = true` in `hesk_oidc_auto_login()`)
+and makes `hesk_check_user_elevation()` return early for them — nginx
+re-validates the NC session (incl. TOTP) on **every** `/admin/` request, so the
+periodic re-auth is redundant for SSO users. Password-form fallback logins
+keep the stock elevator behavior. Safe failure: no `sso` flag → stock code.
 
 ### 7. Staff accounts
 

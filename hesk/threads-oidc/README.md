@@ -19,7 +19,7 @@ for staff (the panel's own login form remains as a safe fallback).
 | OIDC client | `occ oidc:create hesk` (confidential, `code` flow, RS256) | RP credentials for the bridge |
 | Sidecar | `/opt/hesk-oidc/` (FastAPI + PyJWT + requests, venv, systemd `hesk-oidc`) | OIDC RP: login/callback/auth/logout; session store `/var/lib/hesk-oidc/sessions/`; cookie `heskauth` |
 | nginx vhost | `/etc/nginx/sites-available/threads.ronzz.org.conf` | `auth_request` gate on `/admin/` **only**; public ticket pages open; sets `X-Hesk-User` only after success |
-| Hesk patch | `hesk/patches/hesk-oidc-sso.patch` | `admin/index.php` auto-login when `X-Hesk-User` matches a staff account |
+| Hesk patch | `hesk/patches/hesk-oidc-sso.patch` | `admin/index.php` auto-login when `X-Hesk-User` matches a staff account **+** `inc/common.inc.php`: skip the elevator (re-auth) for SSO sessions |
 | DB | MariaDB (localhost) — `hesk` database | Hesk's own DB (NC's Postgres is untouched) |
 
 ## Flow
@@ -59,6 +59,15 @@ uid (e.g. `ron@ronzz.org`) — the SSO lookup is by that exact value.
   is the single second factor**. If a staff user needs Hesk's own MFA, they can
   still use the password form (the `login` case checks SSO first, falls through
   on no-header).
+- **Elevator (re-auth) is skipped for SSO sessions.** Hesk's sensitive pages
+  (Team, MFA management, customer management/import) normally re-ask the Hesk
+  password via `admin/elevator.php` when the `elevated` session marker expires
+  (`elevator_duration`, default 60 min) — a dead end for SSO users whose Hesk
+  password is unknown by design. The patch sets `$_SESSION['sso'] = true` at
+  auto-login and `hesk_check_user_elevation()` (in `inc/common.inc.php`, same
+  patch) returns early for SSO sessions. nginx re-validates the NC session
+  (incl. TOTP) on **every** `/admin/` request, so the periodic re-auth is
+  redundant; password-form fallback logins keep the stock elevator.
 - Sessions: 8 h TTL, server-side file store, `heskauth` cookie HttpOnly+Secure+Lax.
   NC logout/expiry does not kill an active bridge session (documented tradeoff,
   same as webmail-admin).
