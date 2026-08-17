@@ -51,3 +51,26 @@ junk_folder = ""
 sieve_host = "managesieve.migadu.com"
 sieve_port = 4190
 sieve_use_tls = true
+
+# ── Optional: send-to-hesk redirector ─────────────────────────────────
+# Watch a per-account folder; every message appearing there is appended
+# VERBATIM (headers intact) into the target mailbox's destination folder
+# (e.g. Hesk's IMAP intake watching hi@ronzz.org/INBOX), then removed
+# from the source folder.  Requires keyring passwords for BOTH accounts:
+#     mailwatch password set ron@ronzz.org
+#     mailwatch password set hi@ronzz.org
+# [accounts.redirect]
+# enabled = true
+# # Source folder to watch in THIS account's mailbox.
+# source_folder = "send-to-hesk"
+# # Optional: move the source message here after a successful append
+# # instead of deleting it.  Empty = delete (ticket is the single record).
+# after_move_folder = ""
+#
+# [accounts.redirect.target]
+# email = "hi@ronzz.org"
+# imap_host = "imap.migadu.com"
+# imap_port = 993
+# imap_use_ssl = true
+# username = ""
+# destination_folder = "INBOX"

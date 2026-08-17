@@ -400,6 +400,96 @@ class IMAPClient:
         except imaplib.IMAP4.error:
             return False
 
+    def append_message(
+        self, folder: str, raw_message: bytes, flags: list[str] | None = None
+    ) -> bool:
+        """Append a raw RFC822 message into *folder* via IMAP APPEND.
+
+        The message bytes are written verbatim (headers, body, and
+        attachments untouched) — used by the redirector to deliver a
+        message into the destination mailbox exactly as it was fetched.
+
+        Args:
+            folder: Destination folder (e.g. ``"INBOX"``).
+            raw_message: Full raw RFC822 message bytes.
+            flags: Optional IMAP flags to set (e.g. ``["\\Seen"]``).
+
+        Returns:
+            True on success, False on failure.
+        """
+        # imaplib.append() expects the flags as a *string* already wrapped
+        # in parentheses (e.g. "(\\Seen)"), NOT a list — a list is joined
+        # into "(\\Seen)" again by imaplib, producing invalid IMAP
+        # ("Invalid characters in keyword").  Normalize defensively:
+        #   ["\\Seen"]            -> "(\\Seen)"
+        #   "(\\Seen)"            -> "(\\Seen)"
+        #   ["\\Seen", "\\Flagged"] -> "(\\Seen \\Flagged)"
+        #   [] / None             -> None (no flags)
+        flag_arg: str | None = None
+        if flags:
+            if isinstance(flags, str):
+                flag_str = flags.strip()
+            else:
+                flag_str = " ".join(str(f) for f in flags).strip()
+            if flag_str:
+                flag_arg = (
+                    flag_str if flag_str.startswith("(") else f"({flag_str})"
+                )
+        try:
+            typ, _ = self.conn.append(
+                _imap_quote_folder(folder),
+                flag_arg,
+                None,  # internal date — leave server default
+                raw_message,
+            )
+            return typ == "OK"
+        except (imaplib.IMAP4.error, OSError) as exc:
+            logger.warning(
+                "append_message: APPEND to %r failed (%d bytes): %s",
+                folder,
+                len(raw_message),
+                exc,
+            )
+            return False
+
+    def fetch_raw(
+        self,
+        uid: int,
+        folder: str,
+        mark_seen: bool = False,
+    ) -> bytes | None:
+        """Fetch the raw RFC822 bytes of a single message by UID.
+
+        Unlike :meth:`fetch_uids` (which parses into dicts for
+        classification), this returns the *unmodified* message bytes —
+        exactly what the redirector needs to preserve headers.
+
+        Args:
+            uid: IMAP UID of the message.
+            folder: Folder to fetch from.
+            mark_seen: If True, use ``BODY[]`` (marks ``\\Seen``) instead of
+                       ``BODY.PEEK[]``.
+
+        Returns:
+            Raw message bytes, or None on failure.
+        """
+        if not self._select_folder(folder):
+            return None
+        item = "BODY[]" if mark_seen else "BODY.PEEK[]"
+        try:
+            typ, data = self.conn.uid("FETCH", str(uid), f"({item})")
+        except imaplib.IMAP4.error as exc:
+            logger.warning("fetch_raw: FETCH UID %s in %r failed: %s", uid, folder, exc)
+            return None
+        if typ != "OK" or not data:
+            logger.warning("fetch_raw: no data for UID %s in %r", uid, folder)
+            return None
+        for item_data in data:
+            if isinstance(item_data, tuple) and len(item_data) >= 2:
+                return item_data[1]
+        return None
+
+
     def fetch_uids(
         self,
         folder: str,

@@ -27,6 +27,7 @@ from mailwatch.db import MailwatchDB, get_db
 from mailwatch.email.imap.idle import IMAPIdleManager
 from mailwatch.keyring import get_password, set_password
 from mailwatch.pipeline import AccountLock, MailwatchPipeline
+from mailwatch.redirector import Redirector
 from mailwatch.sieve_block import SieveAutoBlocker
 from mailwatch.training import TrainingIdler
 
@@ -180,6 +181,17 @@ class MailwatchDaemon:
                     on_notification=self._on_junk_notification,
                     folder=account.resolved_junk_folder,
                 )
+            if account.redirect.enabled and account.redirect.target is not None:
+                self.idle.start_for_account(
+                    account_email=account.email,
+                    host=account.imap_host,
+                    port=account.imap_port,
+                    use_ssl=account.imap_use_ssl,
+                    username=account.imap_username,
+                    password=pw,
+                    on_notification=self._on_redirect_notification,
+                    folder=account.redirect.source_folder,
+                )
 
     def _on_inbox_notification(
         self, account_email: str, folder: str, event_type: str
@@ -221,6 +233,32 @@ class MailwatchDaemon:
         finally:
             self.locks.release(account_email)
 
+    def _on_redirect_notification(
+        self, account_email: str, folder: str, event_type: str
+    ) -> None:
+        """IDLE callback for the send-to-hesk folder — redirect to Hesk."""
+        if event_type != "exists":
+            return
+        account = self._find_account(account_email)
+        if account is None or not account.redirect.enabled:
+            return
+        if not self.locks.acquire(account_email):
+            return
+        try:
+            n = self._run_redirector(account)
+            if n:
+                logger.info("[redirect] %s: %d message(s) redirected", account_email, n)
+        except Exception as exc:
+            logger.warning(
+                "[watcher] redirect scan failed for %s: %s", account_email, exc
+            )
+        finally:
+            self.locks.release(account_email)
+
+    def _run_redirector(self, account) -> int:
+        redirector = Redirector(account, self.audit, dry_run=self.cfg.daemon.dry_run)
+        return redirector.redirect_account()
+
     def _find_account(self, account_email: str):
         for account in self.cfg.accounts:
             if account.email.lower() == account_email.lower():
@@ -257,6 +295,17 @@ class MailwatchDaemon:
                     continue
                 try:
                     self.pipeline.process_account(account, folder="INBOX")
+                    # Redirector catch-up: re-scan the send-to-hesk folder
+                    # so a missed IDLE notification never leaves a message
+                    # stuck (the folder is normally empty — cheap scan).
+                    if account.redirect.enabled and account.redirect.target is not None:
+                        n = self._run_redirector(account)
+                        if n:
+                            logger.info(
+                                "[redirect] catch-up: %s: %d redirected",
+                                account.email,
+                                n,
+                            )
                 except Exception as exc:
                     logger.warning(
                         "[watcher] Catch-up scan failed for %s: %s", account.email, exc
@@ -319,6 +368,12 @@ class MailwatchDaemon:
                 if self.cfg.daemon.training.enabled:
                     summary = self.training.scan_account(account)
                     logger.info("[training] %s: %s", account.email, summary)
+                if account.redirect.enabled and account.redirect.target is not None:
+                    n = self._run_redirector(account)
+                    if n:
+                        logger.info(
+                            "[redirect] once: %s: %d redirected", account.email, n
+                        )
             except Exception as exc:
                 logger.warning("Account %s failed: %s", account.email, exc)
             finally:

@@ -31,6 +31,53 @@ daemon that protects every mail client (phone, Outlook, webmail).
    action) as JSON lines — see Audit log below.
 5. **Trains itself** from Junk-folder activity (two-signal feedback loop,
    see below).
+6. **Redirects** (optional, per-account) — watches a source folder
+   (default `send-to-hesk`) and appends any message found there **verbatim**
+   (raw RFC822, headers intact, unread) into a target mailbox's folder,
+   then deletes/archives it from the source — the Hesk help-desk intake
+   bridge.  See "send-to-hesk redirector" below.
+
+## send-to-hesk redirector (Hesk intake bridge)
+
+Wires `ron@ronzz.org`'s personal mailbox into the Hesk help desk
+(`threads.ronzz.org`, §8 of the repo README) without ever letting Hesk
+touch personal mail:
+
+```
+[user drops support mail into ron@/send-to-hesk (any client)]
+   → IDLE thread on send-to-hesk fires (or 5-min catch-up scan)
+   → fetch raw BODY[] from source (headers 100% intact)
+   → APPEND verbatim, UNREAD, into hi@ronzz.org/INBOX
+   → delete (or move to after_move_folder) from send-to-hesk
+   → Hesk's IMAP fetch (5-min cron, imap_keep=0) sees it as NEW mail
+     → ticket attributed to the ORIGINAL sender → reply From hi@ronzz.org
+```
+
+- **Headers preserved by construction** — the raw bytes are appended
+  unchanged, so Hesk attributes the ticket to the person who actually
+  emailed you (not the forwarding account).  The From header survives
+  the whole chain.
+- **Unread by design** — Hesk's email intake fetches *unseen* mail only,
+  so the redirected message must arrive without the `\Seen` flag.
+- **No data loss** — the source message is removed only *after* a
+  successful append; on failure it stays in `send-to-hesk` and is
+  retried (IDLE or catch-up).
+- **Trigger** — a third IDLE thread per account (keyed by
+  account+folder, same mechanism as INBOX/Junk) plus the existing
+  catch-up scan as a missed-notification guard.  An IMAP MOVE into the
+  folder fires `EXISTS` → instant redirect.
+- **Config** (per account, see `config.example.toml`):
+  ```toml
+  [accounts.redirect]
+  enabled = true
+  source_folder = "send-to-hesk"
+  # after_move_folder = "send-to-hesk-done"   # archive instead of delete
+  [accounts.redirect.target]
+  email = "hi@ronzz.org"
+  destination_folder = "INBOX"
+  ```
+  Requires keyring passwords for **both** accounts
+  (`mailwatch password set ron@ronzz.org` and `… hi@ronzz.org`).
 
 ## Two-signal continuous training
 
@@ -128,7 +175,9 @@ Every event is appended as a JSON line to `<data_dir>/audit.jsonl`:
 ```
 
 Event types: `startup`, `shutdown`, `classification`, `move`,
-`sieve_block`, `sieve_block_pushed`, `train`, `feed_update`.
+`sieve_block`, `sieve_block_pushed`, `train`, `feed_update`, `redirect`
+(with `event_detail` `ok` | `append_failed` | `dry-run`, plus `target`,
+`source_folder`, `destination_folder`, `uid`).
 `"dry_run": true` is set on every line when running with `--dry-run`.
 
 ## CLI
@@ -148,7 +197,7 @@ mailwatch password set|check EMAIL                           # keyring managemen
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest tests/            # 134 tests (includes ported lighterbird tests)
+.venv/bin/pytest tests/            # 147 tests (includes ported lighterbird tests)
 .venv/bin/ruff check src tests
 ```
 

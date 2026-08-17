@@ -45,6 +45,52 @@ class AutoBlockConfig:
 
 
 @dataclass
+class RedirectTarget:
+    """Destination for the send-to-hesk redirector.
+
+    One target per source account: messages appearing in the source
+    account's ``source_folder`` are appended verbatim into this
+    mailbox's ``destination_folder`` (headers untouched), then removed
+    from the source folder.
+    """
+
+    email: str
+    imap_host: str = "imap.migadu.com"
+    imap_port: int = 993
+    imap_use_ssl: bool = True
+    username: str = ""
+    destination_folder: str = "INBOX"
+    # After a successful append, move the source message here instead of
+    # deleting it outright (empty = delete).  Mirrors the spam pipeline's
+    # junk_folder semantics.
+    after_move_folder: str = ""
+
+    @property
+    def imap_username(self) -> str:
+        return self.username or self.email
+
+
+@dataclass
+class RedirectConfig:
+    """Per-account folder redirector (e.g. send-to-hesk → hi@ INBOX).
+
+    Enabled per source account via ``[[accounts.redirect]]``.  The
+    daemon watches ``source_folder`` (IDLE + catch-up scan) and appends
+    any message found there into the target mailbox, preserving raw
+    headers so downstream consumers (Hesk email intake) attribute the
+    message to its original sender.
+    """
+
+    enabled: bool = False
+    # Source folder to watch in the account's mailbox.
+    source_folder: str = "send-to-hesk"
+    # Optional; if set, the source message is moved here instead of
+    # deleted after a successful append.
+    after_move_folder: str = ""
+    target: RedirectTarget | None = None
+
+
+@dataclass
 class DaemonConfig:
     dry_run: bool = False
     log_level: str = "INFO"
@@ -59,6 +105,8 @@ class DaemonConfig:
     junk_folder: str = "Junk"
     training: TrainingConfig = field(default_factory=TrainingConfig)
     auto_block: AutoBlockConfig = field(default_factory=AutoBlockConfig)
+    # Per-account redirector (send-to-hesk → Hesk inbox).
+    redirect: RedirectConfig = field(default_factory=RedirectConfig)
 
 
 @dataclass
@@ -74,6 +122,8 @@ class AccountConfig:
     sieve_host: str = ""
     sieve_port: int = 4190
     sieve_use_tls: bool = True
+    # Optional send-to-hesk redirector config for this account.
+    redirect: RedirectConfig = field(default_factory=RedirectConfig)
 
     @property
     def imap_username(self) -> str:
@@ -133,6 +183,50 @@ def _parse_float(value: Any, key: str, default: float) -> float:
         ) from None
 
 
+def _parse_redirect_target(raw: dict[str, Any], account_email: str) -> RedirectTarget | None:
+    """Parse an optional ``[accounts.redirect.target]`` block.
+
+    Returns None if no target is configured (redirector disabled for
+    the account).
+    """
+    if not raw:
+        return None
+    email = str(raw.get("email", "")).strip()
+    if not email:
+        raise ConfigError(f"accounts[{account_email}].redirect.target: 'email' is required")
+    if "@" not in email:
+        raise ConfigError(
+            f"accounts[{account_email}].redirect.target: '{email}' is not a valid email address"
+        )
+    return RedirectTarget(
+        email=email,
+        imap_host=str(raw.get("imap_host", "imap.migadu.com")),
+        imap_port=_parse_int(
+            raw.get("imap_port"), f"accounts[{account_email}].redirect.target.imap_port", 993
+        ),
+        imap_use_ssl=_parse_bool(
+            raw.get("imap_use_ssl"), f"accounts[{account_email}].redirect.target.imap_use_ssl", True
+        ),
+        username=str(raw.get("username", "")),
+        destination_folder=str(raw.get("destination_folder", "INBOX")),
+        after_move_folder=str(raw.get("after_move_folder", "")),
+    )
+
+
+def _parse_redirect(raw: dict[str, Any], account_email: str) -> RedirectConfig:
+    """Parse an optional ``[accounts.redirect]`` block."""
+    if not raw:
+        return RedirectConfig()
+    target_raw = raw.get("target", None) or {}
+    target = _parse_redirect_target(target_raw, account_email)
+    return RedirectConfig(
+        enabled=_parse_bool(raw.get("enabled"), f"accounts[{account_email}].redirect.enabled", False),
+        source_folder=str(raw.get("source_folder", "send-to-hesk")),
+        after_move_folder=str(raw.get("after_move_folder", "")),
+        target=target,
+    )
+
+
 def _parse_account(raw: dict[str, Any], index: int) -> AccountConfig:
     email = str(raw.get("email", "")).strip()
     if not email:
@@ -159,6 +253,7 @@ def _parse_account(raw: dict[str, Any], index: int) -> AccountConfig:
             sieve_use_tls=_parse_bool(
                 raw.get("sieve_use_tls"), f"accounts[{index}].sieve_use_tls", True
             ),
+            redirect=_parse_redirect(raw.get("redirect", None), email),
         )
     except ConfigError:
         raise
@@ -280,6 +375,8 @@ __all__ = [
     "ConfigError",
     "DaemonConfig",
     "MailwatchConfig",
+    "RedirectConfig",
+    "RedirectTarget",
     "TrainingConfig",
     "load_config",
 ]
