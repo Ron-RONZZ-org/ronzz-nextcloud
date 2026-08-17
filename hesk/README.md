@@ -26,13 +26,47 @@ the session notes; this directory holds the deployable artifacts.
 hesk/
 ├── README.md                      ← this runbook
 ├── patches/
-│   └── hesk-oidc-sso.patch        ← admin/index.php OIDC auto-login (CRLF-aware)
+│   ├── hesk-oidc-sso.patch        ← admin/index.php OIDC auto-login (CRLF-aware)
+│   ├── hesk-reply-embed.patch     ← admin_reply_ticket.php: embed reply text in
+│   │                                 the notification email (natural replies)
+│   └── hesk-subjects.patch        ← language/en/text.php: natural email subjects
+│                                     (Re: subject [#TRACK]) — reply + ticket received
+├── email-templates/
+│   ├── new_reply_by_staff.txt     ← plain: just %%MESSAGE%% (no URL/footer)
+│   └── new_reply_by_staff.html    ← HTML: just the message
 └── threads-oidc/                  ← OIDC sidecar fork (mirrors webmail-admin-oidc/)
     ├── README.md                  ← auth bridge runbook
     ├── app.py                     ← FastAPI OIDC-RP sidecar (env: HESK_*)
     ├── threads-oidc.service       ← systemd unit (port 8016)
     └── threads.ronzz.org.conf     ← nginx vhost (gate /admin/ only)
 ```
+
+## Natural-reply emails (2026-08-17)
+
+The customer-facing reply email is just the reply text — no tracking-URL or
+site-title footer, so it reads like a normal email. Two pieces (re-apply on
+every Hesk upgrade, like the SSO patch):
+
+1. **`hesk-reply-embed.patch`** — `admin_reply_ticket.php`: before
+   `hesk_notifyCustomer('new_reply_by_staff')`, sets `$ticket['message']` /
+   `$ticket['message_html']` to the reply text so `%%MESSAGE%%` renders it.
+   Apply from the Hesk root: `sudo -u www-data patch -p1 < …/hesk-reply-embed.patch`
+   (CRLF-aware, verified byte-for-byte).
+2. **`email-templates/`** — copy `new_reply_by_staff.txt` + `.html` into
+   `language/en/emails/` and `language/en/html_emails/`.
+
+**What's intentionally kept (essential to Hesk):** `[#TRACK_ID]` in the email
+subject (reply-loop matching) and the code-injected "Reply above this line"
+marker (`EMAIL_HR`, quote-stripping on intake). Everything else is noise-free.
+
+**Email subjects** (`hesk-subjects.patch`, applies to `language/en/text.php`):
+- Reply: `Re: %%SUBJECT%% [#%%TRACK_ID%%]`
+- Ticket received: `Re: %%SUBJECT%% - We have received your email [#%%TRACK_ID%%]`
+
+The tracking code is de-emphasized (end of subject) but still matched by
+Hesk's intake regex (`\[#XXX-XXX-XXXX\]` anywhere in the space-stripped
+subject). Re-apply with the other patches on Hesk upgrades.
+
 
 ## Deployment checklist (mirrors README §7 conventions)
 

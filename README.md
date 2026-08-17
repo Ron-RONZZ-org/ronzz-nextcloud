@@ -409,8 +409,9 @@ Email→ticket intake is **live**, using the personal-mailbox triage pattern:
 | Redirector | mailwatch `[accounts.redirect]` → `hi@ronzz.org/INBOX` (raw append, unread, delete-after-success) — see `mailwatch/README.md` "send-to-hesk redirector" |
 | Hesk IMAP | `imap.migadu.com:993`, user `hi@ronzz.org`, mailbox `INBOX`, `imap_keep=0` (delete after ticket), new-ticket notification per channel |
 | Hesk SMTP | `smtp.migadu.com:465` SSL, user `hi@ronzz.org`; `noreply_mail = hi@ronzz.org`, `noreply_name = Ronzz Helpdesk` |
+| Hesk webmaster | `webmaster_mail = tech@ronzz.org` (the address shown in Hesk error pages; was the `support@example.com` default) |
 | Cron | root: `*/5 * * * * sudo -u hesk php /var/www/hesk/inc/mail/hesk_imap.php` → `/var/log/hesk-imap-fetch.log` |
-| Mailbox | `hi@ronzz.org` created via Migadu API (password in keyring for mailwatch + Hesk settings) |
+| Mailbox | `hi@ronzz.org` + `tech@ronzz.org` created via Migadu API (passwords in keyring for mailwatch + Hesk settings) |
 
 **Why this design** (see session notes): Hesk has ONE IMAP fetch config, so it
 watches `hi@ronzz.org` (a dedicated helpdesk mailbox); `ron@ronzz.org` stays
@@ -420,6 +421,30 @@ to them, never back to you. Unread-by-design (Hesk fetches unseen only).
 Reply loop closes automatically: customer replies to hi@ → Hesk picks it up →
 same ticket (tracking ID). **Caveat: never read hi@ in a mail client — Hesk
 is its only reader.**
+
+**Natural-reply emails (2026-08-17):** the `new_reply_by_staff` template is
+just `%%MESSAGE%%` — the customer's email contains only the reply text (plus
+the invisible "Reply above this line" marker that Hesk uses to strip quoted
+text on intake). No tracking-URL / "Ronzz.ORG" footer — it reads like a normal
+email from a person. Implemented via `hesk/patches/hesk-reply-embed.patch`
+(embeds the reply into `$ticket['message']` before notifying) + the templates
+in `hesk/email-templates/`. Re-apply both on Hesk upgrades (same procedure as
+the SSO patch, §8.1).
+
+**Email subjects (2026-08-17):** made to read like normal email, with the
+tracking code tucked at the end (`hesk/patches/hesk-subjects.patch` — edits
+`language/en/text.php`):
+- Reply: `Re: %%SUBJECT%% [#%%TRACK_ID%%]`
+- Ticket received: `Re: %%SUBJECT%% - We have received your email [#%%TRACK_ID%%]`
+
+The intake reply-loop still works: Hesk's regex matches `[#XXX-XXX-XXXX]`
+anywhere in the subject (space-stripped).
+
+> **Ops note (2026-08-17):** deleting tickets manually must also delete the
+> `hesk_ticket_to_customer` rows — orphaned mappings (from E2E test cleanup)
+> made the ticket page show a wrong "Previous tickets" customer and triggered
+> a reply-path SQL error. Fix pattern: `DELETE FROM hesk_ticket_to_customer
+> WHERE ticket_id NOT IN (SELECT id FROM hesk_tickets);`
 
 **Deploy/upgrade notes:** redirector source is `mailwatch/src/mailwatch/redirector.py`
 + `client.append_message()`/`fetch_raw()` + watcher IDLE/catch-up wiring; deploy =

@@ -1,0 +1,17 @@
+--- a/admin/admin_reply_ticket.php
++++ b/admin/admin_reply_ticket.php
+@@ -460,6 +460,14 @@
+ // Notify customer?
+ elseif ( ! isset($_POST['no_notify']) || intval( hesk_POST('no_notify') ) != 1)
+ {
++	// [PATCH ronzz.org] Embed the reply text in the notification email
++	// so the customer sees the answer inline (no click this link noise).
++	// %%MESSAGE%% in the new_reply_by_staff template renders this text.
++	if ( ! $submit_as_customer)
++	{
++		$ticket['message'] = $message;
++		$ticket['message_html'] = $message_html;
++	}
+ 	hesk_notifyCustomer('new_reply_by_staff');
+ }
+ 

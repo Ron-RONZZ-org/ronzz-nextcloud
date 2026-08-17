@@ -1,0 +1,16 @@
+--- a/language/en/text.php
++++ b/language/en/text.php
+@@ -47,10 +47,10 @@
+ 
+ // EMAIL SUBJECTS
+ $hesklang['new_ticket_staff']             = '[#%%TRACK_ID%%] New ticket: %%SUBJECT%%';
+-$hesklang['ticket_received']              = '[#%%TRACK_ID%%] Ticket received: %%SUBJECT%%';
++$hesklang['ticket_received']              = 'Re: %%SUBJECT%% - We have received your email [#%%TRACK_ID%%]';
+ $hesklang['ticket_assigned_to_you']       = '[#%%TRACK_ID%%] Ticket assigned: %%SUBJECT%%';
+-$hesklang['new_reply_by_customer']        = '[#%%TRACK_ID%%] New reply to: %%SUBJECT%%';
+-$hesklang['new_reply_by_staff']           = '[#%%TRACK_ID%%] New reply to: %%SUBJECT%%';
++$hesklang['new_reply_by_customer']        = 'Re: %%SUBJECT%% [#%%TRACK_ID%%]';
++$hesklang['new_reply_by_staff']           = 'Re: %%SUBJECT%% [#%%TRACK_ID%%]';
+ $hesklang['category_moved']               = '[#%%TRACK_ID%%] Ticket moved: %%SUBJECT%%';
+ $hesklang['new_note']                     = '[#%%TRACK_ID%%] Note added to: %%SUBJECT%%';
+ $hesklang['new_pm']                       = 'New private message: %%SUBJECT%%';
