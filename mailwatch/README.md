@@ -148,13 +148,43 @@ mailwatch password set|check EMAIL                           # keyring managemen
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest tests/            # 129 tests (includes ported lighterbird tests)
+.venv/bin/pytest tests/            # 134 tests (includes ported lighterbird tests)
 .venv/bin/ruff check src tests
 ```
 
 The `tests/` suite reuses lighterbird's `tests/test_email/` tests where
 possible (spam detector, phishing, similarity, capabilities), adapted to
 the daemon's schema (no `accounts`/`messages` tables).
+
+## Live end-to-end test (`e2e/live_e2e.py`)
+
+Proves the daemon's four behaviors against a **real** mailbox (requires
+the daemon running + the password in the keyring):
+
+1. **Spam filtering + MOVE** — a synthetic spam message is classified
+   (score ≥ threshold) and UID-MOVE'd to Junk.
+2. **Ham filtering** — a synthetic neutral message stays in INBOX
+   (audit `action=none`).
+3. **Spam training** — a message moved to Junk *not by the daemon*
+   (simulated gateway/user junk mark) trains the Bayesian classifier
+   (`spam_feedback` `junk_idler`).
+4. **Ham training** — the same message moved back to INBOX ("not spam")
+   trains ham (`spam_feedback` `junk_to_inbox`).
+5. **Bias guard** — daemon-moved messages never train.
+
+All synthetic messages (`mailwatch-e2e-*` Message-IDs) are deleted from
+the mailbox afterwards; their `spam_feedback`/`daemon_moves` rows are
+purged.  Refuses to run without `MAILWATCH_E2E=1`.
+
+```bash
+sudo -u mailwatch HOME=/var/lib/mailwatch MAILWATCH_E2E=1 \
+    /opt/mailwatch/venv/bin/python /opt/mailwatch/e2e/live_e2e.py \
+    --account ron@ronzz.org
+# --scan-interval must match daemon.training.scan_interval_seconds (drives
+# the ham-step wait); the ham signal needs one full reconciliation scan.
+```
+
+Exit code 0 = all steps green.
 
 ## Migadu specifics
 
