@@ -8,6 +8,10 @@ Wants=network-online.target
 Type=simple
 User=mailwatch
 Group=mailwatch
+# Explicit data/config dirs (the daemon's HOME-based defaults would place
+# the DB under ~/.local/share/mailwatch/; keep state at /var/lib/mailwatch).
+Environment=MAILWATCH_DATA_DIR=/var/lib/mailwatch
+Environment=MAILWATCH_CONFIG_DIR=/etc/mailwatch
 ExecStart=/opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml
 Restart=on-failure
 RestartSec=10
