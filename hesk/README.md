@@ -18,7 +18,7 @@ the session notes; this directory holds the deployable artifacts.
 
 > **Status: LIVE on ronzz-linux-server-2 (2026-08-17).** Verified E2E: valid
 > sidecar session → `/admin/index.php` → 302 `admin_main.php` → 200 "Help Desk".
-> Server-side source of truth: `docs/IT/ronzz-linux-server-2.md` ("Hesk" section).
+> Server-side source of truth: `RonzzIT:LinuxServer2` (gated wiki) ("Hesk" section).
 
 ## Contents
 
@@ -189,4 +189,4 @@ Add the same uids to `HESK_ALLOWED_UIDS`.
 Update the main README.md when deployed (your own rule: every structural change
 is documented): new §"Hesk" mirroring §7/§7.8, hostname/version/deploy date,
 and the auth bridge reference to `hesk/threads-oidc/README.md`. **Done 2026-08-17**
-(README §8 + source-of-truth `docs/IT/ronzz-linux-server-2.md` "Hesk" section).
+(README §8 + source-of-truth `RonzzIT:LinuxServer2` (gated wiki) "Hesk" section).

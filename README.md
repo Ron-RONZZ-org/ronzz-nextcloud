@@ -2,8 +2,8 @@
 
 > Single source of truth for the Ronzz.ORG Nextcloud instance. Covers the full stack:
 > deployment, configuration, applications, backups, upgrades, and day-to-day operations.
-> Server-side companion notes are kept locally at `docs/IT/ronzz-linux-server-2.md`
-> (not in this repo).
+> Server-side companion notes live in the gated wiki runbook `RonzzIT:LinuxServer2`
+> (wikibase.ronzz.org, `it` group) — not in this repo.
 
 | | |
 |---|---|
@@ -214,7 +214,7 @@ If `patch` fails (drift), the panel stays password-only until the patch is rebas
 
 ### 7.7 Unified login — NC ↔ Migadu mailbox lifecycle sync (app `nc_migadu_password_sync`)
 
-> **Model:** the NC account password *is* the Migadu mailbox password. The app mirrors the **NC user lifecycle** to Migadu: every password change (personal settings GUI, admin reset, `occ user:resetpassword`, email reset link) or user creation with a password is pushed to the matching Migadu mailbox (created on the fly if missing) via the Migadu API; every NC user deletion deletes their Migadu mailbox. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `docs/IT/migadu-api.md` (server-side).
+> **Model:** the NC account password *is* the Migadu mailbox password. The app mirrors the **NC user lifecycle** to Migadu: every password change (personal settings GUI, admin reset, `occ user:resetpassword`, email reset link) or user creation with a password is pushed to the matching Migadu mailbox (created on the fly if missing) via the Migadu API; every NC user deletion deletes their Migadu mailbox. Webmail keeps validating against Migadu IMAP, so no SnappyMail change was needed. Source: `webmail/nc-migadu-password-sync/` in this repo; Migadu API reference: `RonzzIT:Migadu` on the gated wiki (server-side).
 
 **How it works:** `User::setPassword()` is the single funnel for all password-change paths → `PasswordUpdatedEvent` (plaintext) → app listener → `PasswordSyncProvider` (interface) → `MigaduProvider` → Migadu API with Basic auth (GET/POST/PUT mailbox, DELETE on user removal). The mailbox is the user's primary email (`user@ronzz.org` → `user`); users with no email, a foreign domain, or an id in `nc_migadu_password_sync_exclude` are skipped.
 
@@ -363,7 +363,7 @@ sudo systemctl enable --now mailwatch
 
 ## 8. Hesk — threads.ronzz.org (lightweight issue tracker)
 
-> Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics. Email intake live via the send-to-hesk redirector (§8.3). Source: `hesk/` in this repo; server-side notes: `docs/IT/ronzz-linux-server-2.md`.
+> Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics. Email intake live via the send-to-hesk redirector (§8.3). Source: `hesk/` in this repo; server-side notes: `RonzzIT:LinuxServer2` on the gated wiki.
 
 | | |
 |---|---|
@@ -450,7 +450,7 @@ anywhere in the subject (space-stripped).
 **Deploy/upgrade notes:** redirector source is `mailwatch/src/mailwatch/redirector.py`
 + `client.append_message()`/`fetch_raw()` + watcher IDLE/catch-up wiring; deploy =
 `rsync mailwatch/src/ → /opt/mailwatch/src/` + `systemctl restart mailwatch` (see
-§mailwatch in `docs/IT/ronzz-linux-server-2.md`).
+§mailwatch in `RonzzIT:Mailwatch` on the gated wiki).
 
 ## 9. Branding
 
@@ -555,7 +555,7 @@ docker exec -u www-data nextcloud php occ background:cron
 | Login with an external email → "not whitelisted" / "Account is not allowed" | **By design** — webmail accepts @ronzz.org accounts only (`whiteList: "@ronzz.org"` in `default.json` + `ronzz.org.json`, §7.4). No IP gate needed; works off-premise |
 | Need to allow another domain | Edit `whiteList` in `domains/default.json` (e.g. `"@ronzz.org @other.org"` — space-separated) and add an explicit `domains/<domain>.json` if it needs custom IMAP/SMTP |
 | `occ migadu:test` → "Missing configuration" | Run the four `config:system:set` commands in §7.7 |
-| `occ migadu:test` → HTTP 401 | Migadu API email/key wrong or expired — regenerate the key in Migadu Admin → My Account → API Keys; the account email is the **Migadu login** (not necessarily the mailbox address; see server-side `docs/IT/migadu-api.md`) |
+| `occ migadu:test` → HTTP 401 | Migadu API email/key wrong or expired — regenerate the key in Migadu Admin → My Account → API Keys; the account email is the **Migadu login** (not necessarily the mailbox address; see server-side `RonzzIT:Migadu` on the gated wiki) |
 | `occ migadu:test` → mailbox lookup HTTP 404 | The NC user's email has no Migadu mailbox — **self-healing since v1.2.0**: the mailbox is auto-created on the next password sync (user creation with a password, or a password change). Optionally create it manually, or exclude the user (`nc_migadu_password_sync_exclude`) if the email is a dummy |
 | NC user deleted but Migadu mailbox still exists | Check `nc_migadu_password_sync_delete_mailboxes` isn't `false`; check the NC log for `migadu_sync: mailbox deletion FAILED …`; `occ migadu:test` lists "mailboxes without a matching Nextcloud user" to verify. Recover by re-deleting the NC user or deleting the mailbox in Migadu Admin |
 | NC password change OK but webmail login fails | Sync failure — check the NC log for `migadu_sync: password sync FAILED …`; recover by re-running `occ user:resetpassword <uid>` (fires the event again). See §7.7 |
