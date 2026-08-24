@@ -361,6 +361,23 @@ sudo systemctl enable --now mailwatch
 
 **Ops notes:** upgrade = `pip install --upgrade /opt/mailwatch` + restart unit; check health via `systemctl status mailwatch` + tail `/var/lib/mailwatch/audit.jsonl`; phishing feeds refresh every `feed_refresh_hours` (default 6 h).
 
+### 7.11 External secondary accounts — autoconfig + manual server settings (patch, 2026-08-24)
+
+> Policy: users may add ANY personal/external email as a **secondary** account; the @ronzz.org restriction applies to **primary login only**. Stock SnappyMail gates every login (primary AND secondary) on the domain config files, so external domains got "has no domain configuration". Artifacts: `webmail/patches/snappymail-external-accounts.patch` + `webmail/patches/fix-snappymail-appjs-external-accounts.py` (re-applied on upgrade per §7.5).
+
+| Path | Before | After |
+|---|---|---|
+| Primary login | @ronzz.org only | @ronzz.org only (unchanged — no autoconfig on primary) |
+| Add secondary, domain has a config file | allowed | allowed (unchanged) |
+| Add secondary, external domain | rejected | **autoconfig discovery** (Thunderbird-style: `autoconfig.<domain>/.well-known/mail-v1.xml`, `<domain>/.well-known/autoconfig/mail/config-v1.1.xml`, central `autoconfig.thunderbird.net` DB, Microsoft autodiscover, DNS SRV) |
+| …autoconfig unusable (e.g. UL publishes a placeholder template) | — | **manual server settings** in the add-account popup (IMAP/SMTP host, port, encryption) |
+
+Resolved settings are stored per-account in the token (`manual` key) so restore/switch never re-runs discovery. Placeholder hostnames (`%IMAPSERVERNAME%`), IP literals and `localhost` are rejected (SSRF hygiene); fetches are 5 s-timeout bound. The whitelist (`whiteList: "@ronzz.org"` in `ronzz.org.json`) is untouched and still governs ronzz.org.
+
+**Provider quirks:** Gmail/Google & Outlook require an **app password** (plain password auth blocked) — IMAP auth fails normally; user must create an app password. Université de Lorraine students (per UL docs, autoconfig is a broken template): IMAP `imap.etu.univ-lorraine.fr:993` SSL/TLS, SMTP `smtp.etu.univ-lorraine.fr:587` STARTTLS, login = full email — enter via "Utiliser des paramètres serveur manuels".
+
+**Server mechanics:** `Domain::getByEmailAddress($email, $bAllowAutoconfig)` — flag set only for additional accounts (`LoginProcess(..., $bMainAccount = false)`); `Autoconfig::discoverDomain()/manualDomain()` build a synthetic `Domain`; `LoginProcess` persists it on the account; `AdditionalAccount::asTokenArray` stores it as `manual`; `Account::NewInstanceFromTokenArray` restores from it (falls back to the domain provider for config-file domains).
+
 ## 8. Hesk — threads.ronzz.org (lightweight issue tracker)
 
 > Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics. Email intake live via the send-to-hesk redirector (§8.3). Source: `hesk/` in this repo; server-side notes: `RonzzIT:LinuxServer2` on the gated wiki.

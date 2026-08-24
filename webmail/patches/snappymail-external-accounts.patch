@@ -1,0 +1,473 @@
+diff -ru a/app/libraries/RainLoop/Actions/Accounts.php b/app/libraries/RainLoop/Actions/Accounts.php
+--- a/app/libraries/RainLoop/Actions/Accounts.php	2026-08-16 11:24:24.108092224 +0000
++++ b/app/libraries/RainLoop/Actions/Accounts.php	2026-08-24 13:58:03.805278626 +0000
+@@ -86,7 +86,29 @@
+ 		$bNew = !empty($this->GetActionParam('new', 1));
+ 
+ 		if ($bNew || \strlen($oPassword)) {
+-			$oNewAccount = $this->LoginProcess($sEmail, $oPassword, false);
++			// [PATCH ronzz.org] optional manual server settings for secondary accounts
++			$sImapHost = \trim((string) $this->GetActionParam('imapHost', ''));
++			$sSmtpHost = \trim((string) $this->GetActionParam('smtpHost', ''));
++			$oManual = null;
++			if ($sImapHost || $sSmtpHost) {
++				$oManual = [
++					'imap' => [
++						'host' => $sImapHost,
++						'port' => (int) $this->GetActionParam('imapPort', 993) ?: 993,
++						'type' => (string) $this->GetActionParam('imapType', 'SSL')
++					],
++					'smtp' => [
++						'host' => $sSmtpHost,
++						'port' => (int) $this->GetActionParam('smtpPort', 587) ?: 587,
++						'type' => (string) $this->GetActionParam('smtpType', 'STARTTLS')
++					]
++				];
++			} else if (!$bNew && !empty($aAccounts[$sEmail]['manual'])) {
++				// [PATCH ronzz.org] editing an external account (e.g. password change):
++				// reuse the stored server settings instead of re-running autoconfig.
++				$oManual = $aAccounts[$sEmail]['manual'];
++			}
++			$oNewAccount = $this->LoginProcess($sEmail, $oPassword, false, $oManual);
+ 			$sEmail = $oNewAccount->Email();
+ 			$aAccount = $oNewAccount->asTokenArray($oMainAccount);
+ 		} else {
+diff -ru a/app/libraries/RainLoop/Actions/UserAuth.php b/app/libraries/RainLoop/Actions/UserAuth.php
+--- a/app/libraries/RainLoop/Actions/UserAuth.php	2026-08-16 11:24:24.108374984 +0000
++++ b/app/libraries/RainLoop/Actions/UserAuth.php	2026-08-24 13:53:41.409055078 +0000
+@@ -139,7 +139,7 @@
+ 	/**
+ 	 * @throws \RainLoop\Exceptions\ClientException
+ 	 */
+-	public function LoginProcess(string $sEmail, SensitiveString $oPassword, bool $bMainAccount = true): Account
++	public function LoginProcess(string $sEmail, SensitiveString $oPassword, bool $bMainAccount = true, ?array $manualConfig = null): Account
+ 	{
+ 		$aCredentials = $this->resolveLoginCredentials($sEmail, $oPassword);
+ 
+@@ -147,13 +147,21 @@
+ 			throw new ClientException(Notifications::InvalidInputArgument);
+ 		}
+ 
+-		$oDomain = $this->DomainProvider()->getByEmailAddress($aCredentials['email']);
++		// [PATCH ronzz.org] policy: @ronzz.org restriction applies to primary login
++		// only. Secondary accounts may use any external domain — explicit manual
++		// server settings take precedence, otherwise autoconfig discovery runs.
++		$oDomain = null;
++		if ($manualConfig) {
++			$oDomain = \RainLoop\Providers\Domain\Autoconfig::manualDomain($aCredentials['email'], $manualConfig);
++		} else {
++			$oDomain = $this->DomainProvider()->getByEmailAddress($aCredentials['email'], !$bMainAccount);
++		}
+ 
+ 		$oAccount = null;
+ 		try {
+ 			$oAccount = $bMainAccount ? new MainAccount : new AdditionalAccount;
+ 			$oAccount->setCredentials(
+-				$aCredentials['domain'],
++				$oDomain,
+ 				$aCredentials['email'],
+ 				$aCredentials['imapUser'],
+ 				$oPassword,
+@@ -169,6 +177,24 @@
+ 			throw $oException;
+ 		}
+ 
++		// [PATCH ronzz.org] persist resolved server settings when no domain config
++		// file exists (external secondary accounts), so the stored token restores
++		// the account without re-running discovery.
++		if (!$aCredentials['domain'] && $oDomain) {
++			$oAccount->setManualSettings([
++				'imap' => [
++					'host' => $oDomain->ImapSettings()->host,
++					'port' => $oDomain->ImapSettings()->port,
++					'type' => $oDomain->ImapSettings()->type
++				],
++				'smtp' => [
++					'host' => $oDomain->SmtpSettings()->host,
++					'port' => $oDomain->SmtpSettings()->port,
++					'type' => $oDomain->SmtpSettings()->type
++				]
++			]);
++		}
++
+ 		$this->imapConnect($oAccount, true);
+ 		if ($bMainAccount) {
+ 			$this->StorageProvider()->Put($oAccount, StorageType::SESSION, Utils::GetSessionToken(), 'true');
+diff -ru a/app/libraries/RainLoop/Model/Account.php b/app/libraries/RainLoop/Model/Account.php
+--- a/app/libraries/RainLoop/Model/Account.php	2026-08-16 11:24:24.108884345 +0000
++++ b/app/libraries/RainLoop/Model/Account.php	2026-08-24 13:53:41.410722041 +0000
+@@ -23,6 +23,10 @@
+ 
+ 	private ?Domain $oDomain = null;
+ 
++	// [PATCH ronzz.org] resolved server settings for accounts whose domain has no
++	// config file (external secondary accounts); persisted in the account token.
++	private array $manualSettings = [];
++
+ 	public function Email() : string
+ 	{
+ 		return $this->sEmail;
+@@ -54,6 +58,16 @@
+ 		return $this->oDomain;
+ 	}
+ 
++	public function ManualSettings() : array
++	{
++		return $this->manualSettings;
++	}
++
++	public function setManualSettings(array $aSettings) : void
++	{
++		$this->manualSettings = $aSettings;
++	}
++
+ 	public function Hash() : string
+ 	{
+ 		return \sha1(\implode(APP_SALT, [
+@@ -159,7 +173,12 @@
+ 			if (empty($aAccountHash['email']) || empty($aAccountHash['login']) || empty($aAccountHash['pass'])) {
+ 				throw new \RuntimeException("Invalid TokenArray");
+ 			}
+-			$oDomain = $oActions->DomainProvider()->getByEmailAddress($aAccountHash['email']);
++			// [PATCH ronzz.org] restore external secondary accounts from their stored
++			// server settings; otherwise (re)resolve via the domain provider, allowing
++			// autoconfig for additional accounts only (primary login stays @ronzz.org).
++			$oDomain = !empty($aAccountHash['manual'])
++				? \RainLoop\Providers\Domain\Autoconfig::manualDomain($aAccountHash['email'], $aAccountHash['manual'])
++				: $oActions->DomainProvider()->getByEmailAddress($aAccountHash['email'], static::class !== \RainLoop\Model\MainAccount::class);
+ 			if ($oDomain) {
+ //				$aAccountHash['email'] = $oDomain->ImapSettings()->fixUsername($aAccountHash['email'], false);
+ //				$aAccountHash['login'] = $oDomain->ImapSettings()->fixUsername($aAccountHash['login']);
+diff -ru a/app/libraries/RainLoop/Model/AdditionalAccount.php b/app/libraries/RainLoop/Model/AdditionalAccount.php
+--- a/app/libraries/RainLoop/Model/AdditionalAccount.php	2026-08-16 11:24:24.108770025 +0000
++++ b/app/libraries/RainLoop/Model/AdditionalAccount.php	2026-08-24 13:53:41.410902961 +0000
+@@ -35,6 +35,10 @@
+ 		if (!empty($aData['smtp']['pass'])) {
+ 			$aData['smtp']['pass'] = \SnappyMail\Crypt::EncryptUrlSafe($aData['smtp']['pass'], $sHash);
+ 		}
++		// [PATCH ronzz.org] persist resolved server settings for external accounts
++		if ($this->ManualSettings()) {
++			$aData['manual'] = $this->ManualSettings();
++		}
+ 		$aData['hmac'] = \hash_hmac('sha1', $aData['pass'], $sHash);
+ 		return $aData;
+ 	}
+diff -ru a/app/libraries/RainLoop/Providers/Domain/Autoconfig.php b/app/libraries/RainLoop/Providers/Domain/Autoconfig.php
+--- a/app/libraries/RainLoop/Providers/Domain/Autoconfig.php	2026-08-16 11:24:24.109438265 +0000
++++ b/app/libraries/RainLoop/Providers/Domain/Autoconfig.php	2026-08-24 13:53:41.407144876 +0000
+@@ -5,6 +5,8 @@
+ 
+ namespace RainLoop\Providers\Domain;
+ 
++use MailSo\Net\Enumerations\ConnectionSecurityType;
++
+ abstract class Autoconfig
+ {
+ 	public static function discover(string $emailaddress) : ?array
+@@ -35,7 +37,7 @@
+ 			// Central database https://www.ietf.org/archive/id/draft-bucksch-autoconfig-02.html#section-4.2
+ 			"https://autoconfig.thunderbird.net/v1.1/{$domain}"
+ 		] as $url) {
+-			$data = \file_get_contents($url);
++			$data = static::httpGet($url);
+ 			if ($data && \str_contains($data, '<clientConfig')) {
+ 				$data = \json_decode(
+ 					\json_encode(
+@@ -198,6 +200,7 @@
+ 		$email = "autodiscover@{$domain}";
+ 		$context = \stream_context_create(['http' => [
+ 			'method'  => 'POST',
++			'timeout' => 5,
+ 			'header'  => 'Content-Type: application/xml',
+ 			'content' => '<?xml version="1.0" encoding="utf-8" ?>
+ 		<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+@@ -208,7 +211,7 @@
+ 		</Autodiscover>'
+ 		]]);
+ 		$url = "{$host}/autodiscover/autodiscover.xml";
+-		$xml = \file_get_contents($url, false, $context);
++		$xml = @\file_get_contents($url, false, $context);
+ 		if ($xml) {
+ 			$data = \json_decode(
+ 				\json_encode(
+@@ -245,4 +248,172 @@
+ 		return null;
+ 	}
+ 
++	// [PATCH ronzz.org] ---- external secondary accounts -------------------------
++	// Policy: @ronzz.org restriction applies to primary login only. Secondary
++	// accounts may use any personal/external domain; server settings are either
++	// detected via Thunderbird-style autoconfig or entered manually.
++
++	/**
++	 * HTTP GET with a short timeout. Discovery runs inside the interactive
++	 * login/add-account flow, so a hung upstream must not stall it (PHP's
++	 * default_socket_timeout is 60s).
++	 */
++	private static function httpGet(string $sUrl) : ?string
++	{
++		$rCtx = \stream_context_create([
++			'http' => ['timeout' => 5, 'follow_location' => 1, 'ignore_errors' => 1],
++			'https' => ['timeout' => 5, 'follow_location' => 1, 'ignore_errors' => 1]
++		]);
++		$sData = @\file_get_contents($sUrl, false, $rCtx);
++		return \is_string($sData) ? $sData : null;
++	}
++
++	/**
++	 * Map an autoconfig socketType / port pair to a ConnectionSecurityType
++	 * constant (0 = none, 1 = SSL, 2 = STARTTLS).
++	 */
++	private static function securityType($mType, int $iPort) : int
++	{
++		if (\is_int($mType) || \ctype_digit((string) $mType)) {
++			return (int) $mType;
++		}
++		switch (\strtoupper((string) $mType)) {
++			case 'SSL':
++			case 'TLS':
++			case 'IMAPS':
++				return ConnectionSecurityType::SSL;
++			case 'STARTTLS':
++				return ConnectionSecurityType::STARTTLS;
++		}
++		if (993 === $iPort || 995 === $iPort || 465 === $iPort) {
++			return ConnectionSecurityType::SSL;
++		}
++		if (587 === $iPort || 143 === $iPort) {
++			return ConnectionSecurityType::STARTTLS;
++		}
++		return ConnectionSecurityType::NONE;
++	}
++
++	/**
++	 * Hostnames from autoconfig XML must be concrete: reject template
++	 * placeholders (e.g. "%IMAPSERVERNAME%"), IP literals and localhost
++	 * (SSRF hygiene).
++	 */
++	private static function isUsableHostname(string $sHost) : bool
++	{
++		$sHost = \trim($sHost);
++		if (!\strlen($sHost) || \str_contains($sHost, '%')) {
++			return false;
++		}
++		if (\filter_var($sHost, \FILTER_VALIDATE_IP) || \str_contains($sHost, 'localhost')) {
++			return false;
++		}
++		return true;
++	}
++
++	/**
++	 * Build a synthetic Domain from explicit server settings (manual mode).
++	 * SMTP falls back to the IMAP host when not given. Returns null when no
++	 * usable IMAP host is present.
++	 */
++	public static function manualDomain(string $sEmail, array $aManual) : ?\RainLoop\Model\Domain
++	{
++		$sDomainName = \strtolower(\idn_to_ascii(\MailSo\Base\Utils::getEmailAddressDomain($sEmail)));
++		$aImap = $aManual['imap'] ?? [];
++		$aSmtp = $aManual['smtp'] ?? [];
++		$sImapHost = \trim((string) ($aImap['host'] ?? ''));
++		$sSmtpHost = \trim((string) ($aSmtp['host'] ?? '')) ?: $sImapHost;
++		if (!\strlen($sImapHost)) {
++			return null;
++		}
++		$aDomain = [
++			'IMAP' => [
++				'host' => $sImapHost,
++				'port' => (int) ($aImap['port'] ?? 993) ?: 993,
++				'type' => static::securityType($aImap['type'] ?? null, (int) ($aImap['port'] ?? 993)),
++				'timeout' => 300,
++				'shortLogin' => !empty($aImap['shortLogin']),
++				'lowerLogin' => false,
++				'stripLogin' => ''
++			],
++			'SMTP' => [
++				'host' => $sSmtpHost,
++				'port' => (int) ($aSmtp['port'] ?? 587) ?: 587,
++				'type' => static::securityType($aSmtp['type'] ?? null, (int) ($aSmtp['port'] ?? 587)),
++				'timeout' => 60,
++				'shortLogin' => !empty($aSmtp['shortLogin']),
++				'lowerLogin' => false,
++				'stripLogin' => '',
++				'useAuth' => true,
++				'setSender' => false,
++				'usePhpMail' => false,
++				'authPlainLine' => false
++			],
++			'Sieve' => [
++				'enabled' => false,
++				'host' => '',
++				'port' => 4190,
++				'type' => 0,
++				'timeout' => 10,
++				'shortLogin' => false,
++				'lowerLogin' => false
++			],
++			'whiteList' => ''
++		];
++		return \RainLoop\Model\Domain::fromArray($sDomainName, $aDomain);
++	}
++
++	/**
++	 * Discover server settings for an arbitrary domain (Thunderbird-style
++	 * autoconfig) and return them as a synthetic Domain, or null when nothing
++	 * usable was found (unreachable, placeholder hostnames, no IMAP entry...).
++	 */
++	public static function discoverDomain(string $sEmail) : ?\RainLoop\Model\Domain
++	{
++		$aConfig = static::discover($sEmail);
++		if (!$aConfig) {
++			return null;
++		}
++		$aIncoming = $aConfig['incomingServer'] ?? [];
++		$aOutgoing = $aConfig['outgoingServer'] ?? [];
++		if (isset($aIncoming['@attributes'])) {
++			$aIncoming = [$aIncoming];
++		}
++		if (isset($aOutgoing['@attributes'])) {
++			$aOutgoing = [$aOutgoing];
++		}
++		$aImap = $aSmtp = null;
++		foreach ($aIncoming as $aServer) {
++			if ('imap' === ($aServer['@attributes']['type'] ?? '')
++			 && static::isUsableHostname($aServer['hostname'] ?? '')) {
++				$aImap = $aServer;
++				break;
++			}
++		}
++		foreach ($aOutgoing as $aServer) {
++			if ('smtp' === ($aServer['@attributes']['type'] ?? '')
++			 && static::isUsableHostname($aServer['hostname'] ?? '')) {
++				$aSmtp = $aServer;
++				break;
++			}
++		}
++		if (!$aImap) {
++			return null;
++		}
++		$sUsername = (string) ($aImap['username'] ?? '%EMAILADDRESS%');
++		return static::manualDomain($sEmail, [
++			'imap' => [
++				'host' => $aImap['hostname'],
++				'port' => (int) ($aImap['port'] ?? 993) ?: 993,
++				'type' => static::securityType($aImap['socketType'] ?? null, (int) ($aImap['port'] ?? 993)),
++				'shortLogin' => '%EMAILLOCALPART%' === $sUsername
++			],
++			'smtp' => [
++				'host' => $aSmtp ? $aSmtp['hostname'] : '',
++				'port' => (int) ($aSmtp['port'] ?? 587) ?: 587,
++				'type' => static::securityType($aSmtp['socketType'] ?? null, (int) ($aSmtp['port'] ?? 587))
++			]
++		]);
++	}
++
+ }
+diff -ru a/app/libraries/RainLoop/Providers/Domain.php b/app/libraries/RainLoop/Providers/Domain.php
+--- a/app/libraries/RainLoop/Providers/Domain.php	2026-08-16 11:24:24.110037826 +0000
++++ b/app/libraries/RainLoop/Providers/Domain.php	2026-08-24 13:53:41.407328996 +0000
+@@ -77,9 +77,14 @@
+ 		return $this->oDriver instanceof Domain\DomainInterface;
+ 	}
+ 
+-	public function getByEmailAddress(string $sEmail) : \RainLoop\Model\Domain
++	public function getByEmailAddress(string $sEmail, bool $bAllowAutoconfig = false) : \RainLoop\Model\Domain
+ 	{
+ 		$oDomain = $this->Load(\MailSo\Base\Utils::getEmailAddressDomain($sEmail), true);
++		// [PATCH ronzz.org] secondary accounts may use any external domain:
++		// auto-detect server settings when no domain config file exists.
++		if (!$oDomain && $bAllowAutoconfig) {
++			$oDomain = \RainLoop\Providers\Domain\Autoconfig::discoverDomain($sEmail);
++		}
+ 		if (!$oDomain) {
+ 			throw new ClientException(Notifications::DomainNotAllowed, null, "{$sEmail} has no domain configuration");
+ 		}
+diff -ru a/app/localization/en/user.json b/app/localization/en/user.json
+--- a/app/localization/en/user.json	2026-08-17 16:13:46.149438662 +0000
++++ b/app/localization/en/user.json	2026-08-24 13:55:38.036545646 +0000
+@@ -271,7 +271,15 @@
+ 	"POPUPS_ADD_ACCOUNT": {
+ 		"TITLE_ADD_ACCOUNT": "Add Account",
+ 		"BUTTON_ADD_ACCOUNT": "Add",
+-		"TITLE_UPDATE_ACCOUNT": "Edit Account"
++		"TITLE_UPDATE_ACCOUNT": "Edit Account",
++		"MANUAL_SETTINGS": "Use manual server settings",
++		"SERVER_INCOMING": "Incoming server (IMAP)",
++		"SERVER_OUTGOING": "Outgoing server (SMTP)",
++		"IMAP_HOST": "IMAP host",
++		"IMAP_PORT": "IMAP port",
++		"SMTP_HOST": "SMTP host",
++		"SMTP_PORT": "SMTP port",
++		"ENCRYPTION": "Encryption"
+ 	},
+ 	"POPUPS_IDENTITY": {
+ 		"TITLE_ADD_IDENTITY": "Add Identity",
+diff -ru a/app/localization/fr/user.json b/app/localization/fr/user.json
+--- a/app/localization/fr/user.json	2026-08-17 16:13:46.149672343 +0000
++++ b/app/localization/fr/user.json	2026-08-24 13:55:38.036881766 +0000
+@@ -271,7 +271,15 @@
+ 	"POPUPS_ADD_ACCOUNT": {
+ 		"TITLE_ADD_ACCOUNT": "Ajouter un compte",
+ 		"BUTTON_ADD_ACCOUNT": "Ajouter",
+-		"TITLE_UPDATE_ACCOUNT": "Mettre à jour le compte"
++		"TITLE_UPDATE_ACCOUNT": "Mettre à jour le compte",
++		"MANUAL_SETTINGS": "Utiliser des paramètres serveur manuels",
++		"SERVER_INCOMING": "Serveur entrant (IMAP)",
++		"SERVER_OUTGOING": "Serveur sortant (SMTP)",
++		"IMAP_HOST": "Hôte IMAP",
++		"IMAP_PORT": "Port IMAP",
++		"SMTP_HOST": "Hôte SMTP",
++		"SMTP_PORT": "Port SMTP",
++		"ENCRYPTION": "Chiffrement"
+ 	},
+ 	"POPUPS_IDENTITY": {
+ 		"TITLE_ADD_IDENTITY": "Ajouter une identité",
+diff -ru a/app/templates/Views/User/PopupsAccount.html b/app/templates/Views/User/PopupsAccount.html
+--- a/app/templates/Views/User/PopupsAccount.html	2026-08-16 11:24:24.115758034 +0000
++++ b/app/templates/Views/User/PopupsAccount.html	2026-08-24 13:55:38.036282126 +0000
+@@ -25,6 +25,45 @@
+ 		<label data-i18n="GLOBAL/NAME"></label>
+ 		<input name="name" type="text" class="input-xlarge" data-bind="value: name">
+ 	</div>
++	<!-- [PATCH ronzz.org] manual server settings for secondary accounts (any external domain) -->
++	<div class="control-group">
++		<label class="checkbox">
++			<input type="checkbox" name="manual" value="1" data-bind="checked: manual">
++			<span data-i18n="POPUPS_ADD_ACCOUNT/MANUAL_SETTINGS"></span>
++		</label>
++	</div>
++	<div data-bind="visible: manual">
++		<div class="legend" data-i18n="POPUPS_ADD_ACCOUNT/SERVER_INCOMING"></div>
++		<div class="control-group">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/IMAP_HOST"></label>
++			<input name="imapHost" type="text" class="input-xlarge" autocorrect="off" autocapitalize="off" placeholder="imap.example.com" data-bind="value: imapHost">
++		</div>
++		<div class="control-group">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/IMAP_PORT"></label>
++			<input name="imapPort" type="number" min="1" max="65535" class="input-mini" data-bind="value: imapPort">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/ENCRYPTION"></label>
++			<select name="imapType" data-bind="value: imapType">
++				<option value="SSL">SSL/TLS</option>
++				<option value="STARTTLS">STARTTLS</option>
++				<option value="">None</option>
++			</select>
++		</div>
++		<div class="legend" data-i18n="POPUPS_ADD_ACCOUNT/SERVER_OUTGOING"></div>
++		<div class="control-group">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/SMTP_HOST"></label>
++			<input name="smtpHost" type="text" class="input-xlarge" autocorrect="off" autocapitalize="off" placeholder="smtp.example.com" data-bind="value: smtpHost">
++		</div>
++		<div class="control-group">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/SMTP_PORT"></label>
++			<input name="smtpPort" type="number" min="1" max="65535" class="input-mini" data-bind="value: smtpPort">
++			<label data-i18n="POPUPS_ADD_ACCOUNT/ENCRYPTION"></label>
++			<select name="smtpType" data-bind="value: smtpType">
++				<option value="SSL">SSL/TLS</option>
++				<option value="STARTTLS">STARTTLS</option>
++				<option value="">None</option>
++			</select>
++		</div>
++	</div>
+ </form>
+ <footer>
+ 	<button form="accountform" class="btn buttonAddAccount">
