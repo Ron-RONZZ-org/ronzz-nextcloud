@@ -1,0 +1,44 @@
+diff -ruN a/app/libraries/RainLoop/Model/Account.php b/app/libraries/RainLoop/Model/Account.php
+--- a/app/libraries/RainLoop/Model/Account.php	2026-09-03 10:40:35.332717879 +0000
++++ b/app/libraries/RainLoop/Model/Account.php	2026-09-03 10:40:35.333807125 +0000
+@@ -188,6 +188,12 @@
+ 				$oAccount->sImapUser = $aAccountHash['login'];
+ 				$oAccount->setImapPass(new SensitiveString($aAccountHash['pass']));
+ 				$oAccount->oDomain = $oDomain;
++				// [PATCH ronzz.org] keep the resolved server settings on the restored
++				// object: later serializations (e.g. the account-switch cookie set by
++				// SetAdditionalAuthToken) must still carry them, never re-run discovery.
++				if (!empty($aAccountHash['manual'])) {
++					$oAccount->setManualSettings($aAccountHash['manual']);
++				}
+ 				$oActions->Plugins()->RunHook('filter.account', array($oAccount));
+ 				if (!$oAccount) {
+ 					throw new ClientException(Notifications::AccountFilterError);
+diff -ruN a/app/libraries/RainLoop/Model/AdditionalAccount.php b/app/libraries/RainLoop/Model/AdditionalAccount.php
+--- a/app/libraries/RainLoop/Model/AdditionalAccount.php	2026-09-03 10:40:35.332762639 +0000
++++ b/app/libraries/RainLoop/Model/AdditionalAccount.php	2026-09-03 10:40:35.333851446 +0000
+@@ -43,6 +43,24 @@
+ 		return $aData;
+ 	}
+ 
++	// [PATCH ronzz.org] external secondary accounts: include the resolved
++	// server settings in jsonSerialize() output. The account-switch cookie
++	// (AUTH_ADDITIONAL_TOKEN_KEY) is built from jsonSerialize() via
++	// Cookies::setSecure(); the post-switch reload restores the account from
++	// that cookie. Without 'manual', an external domain (no config file)
++	// would have to be re-resolved via autoconfig - broken for some
++	// providers (e.g. univ-lorraine.fr) - and the app would fall back to
++	// the main account view.
++	#[\ReturnTypeWillChange]
++	public function jsonSerialize()
++	{
++		$aResult = parent::jsonSerialize();
++		if ($this->ManualSettings()) {
++			$aResult['manual'] = $this->ManualSettings();
++		}
++		return $aResult;
++	}
++
+ 	public static function NewInstanceFromTokenArray(
+ 		\RainLoop\Actions $oActions,
+ 		array $aAccountHash,

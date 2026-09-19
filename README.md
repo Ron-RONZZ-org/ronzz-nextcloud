@@ -378,6 +378,17 @@ Resolved settings are stored per-account in the token (`manual` key) so restore/
 
 **Server mechanics:** `Domain::getByEmailAddress($email, $bAllowAutoconfig)` — flag set only for additional accounts (`LoginProcess(..., $bMainAccount = false)`); `Autoconfig::discoverDomain()/manualDomain()` build a synthetic `Domain`; `LoginProcess` persists it on the account; `AdditionalAccount::asTokenArray` stores it as `manual`; `Account::NewInstanceFromTokenArray` restores from it (falls back to the domain provider for config-file domains).
 
+### 7.12 Fix: account switch bounced back to primary for external accounts (2026-09-03)
+
+> **Bug:** adding an external secondary account worked, but switching to it reloaded straight back into the primary account. Switching to an internal additional account (`xivilization@ronzz.org`) worked. Root cause: the account-**switch cookie** (`AUTH_ADDITIONAL_TOKEN_KEY`) is serialized from `Account::jsonSerialize()` via `Cookies::setSecure()`, which carried only `email/login/pass/name/smtp` — the `manual` server settings existed **only** in the accounts **file** token (`asTokenArray`). On the post-switch reload the app restores the current account from that cookie, so an external domain (no config file) had to be re-resolved via autoconfig — for UL that is a broken placeholder template (`%IMAPSERVERNAME%`…) → restore failed → silent fallback to primary. Artifact: `webmail/patches/snappymail-switch-cookie-manual.patch` (delta on top of `snappymail-external-accounts.patch`; **apply in that order** on upgrade, per §7.5).
+
+| Change | File | Effect |
+|---|---|---|
+| On token-array restore, keep the resolved settings on the object | `Account::NewInstanceFromTokenArray()` | re-serializations (cookie) still carry `manual` |
+| `AdditionalAccount::jsonSerialize()` override adds `manual` | `Model/AdditionalAccount.php` | switch cookie now carries the server settings → reload restore uses `manualDomain()`, never autoconfig |
+
+Deployed 2026-09-03 (live `v/2.38.2`); backup `/var/backups/snappymail/pre-switch-cookie-20260903/`. Validated: CLI round-trip (`jsonSerialize` carries `manual`; cookie-shaped token restores the external domain via `manualDomain()`), syntax checks, patch dry-run. No client-JS change; no data migration (old cookies without `manual` merely behave as before until the next switch).
+
 ## 8. Hesk — threads.ronzz.org (lightweight issue tracker)
 
 > Deployed 2026-08-17. Internal "odd issues" tracker (assigning + status + categories, ticket-list feel). Chosen over Zammad/Vikunja/FreeScout for footprint + ticket semantics. Email intake live via the send-to-hesk redirector (§8.3). Source: `hesk/` in this repo; server-side notes: `RonzzIT:LinuxServer2` on the gated wiki.
