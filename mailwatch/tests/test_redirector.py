@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from mailwatch.audit import AuditLog
 from mailwatch.config import AccountConfig, RedirectConfig, RedirectTarget
 from mailwatch.redirector import Redirector
