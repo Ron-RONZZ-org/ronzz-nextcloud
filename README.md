@@ -111,7 +111,7 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 | Office | ⛔ disabled | Shipped core app — `occ app:remove` refuses; disabled is equivalent. |
 | Files, Dashboard, Activity, Text, Photos | ✅ | Default set. |
 | **Calendar** | ✅ (6.5.3) | Installed 2026-08-16 — previously listed in this doc but actually missing from the instance. |
-| **Contacts** | ✅ (8.7.6) | Installed 2026-08-16 (see Calendar). |
+| **Contacts** | ✅ (8.8.0, patched) | Installed 2026-08-16 (see Calendar); updated 8.7.6 → 8.8.0 on 2026-09-02 (`occ app:update contacts`). Runs a **locally rebuilt frontend** — see §6.2. |
 | **Deck** | ✅ (1.18.3) | Installed 2026-08-16 (see Calendar). |
 | **Forms** | ✅ (5.3.5) | Installed 2026-08-16 via app store (portal tile §6.1). |
 | **Announcement Center** | ✅ (7.5.0) | Installed 2026-08-16 via app store (portal tile §6.1). |
@@ -132,6 +132,15 @@ Host crontab (root): `*/5 * * * * docker exec -u www-data nextcloud php cron.php
 - Admin UI: **Settings → Administration → Dashboard Launcher** — title/welcome/footer, add/reorder/group-restrict buttons, upload icons.
 - Buttons as of 2026-08-16: Fichiers, Calendrier, Contacts, Deck, Photos, Talk, Activité, Webmail, **Formulaires, Annonces, Tableau blanc** (added 2026-08-16, same day). (Text omitted — no standalone page route in NC 34, it's an embedded editor.)
 - The widgets Dashboard app stays enabled at `/apps/dashboard/` — it's just no longer the landing page.
+
+### 6.2 Contacts app patch (frontend rebuild)
+
+The deployed Contacts **8.8.0** runs a frontend rebuilt from source with two patches (the release tarball ships only built `js/`/`css/`, so a rebuild is required, not a file patch). Tracked in `contacts/` — full rebuild/deploy runbook: `contacts/README.md`.
+
+- **PR #5626** (upstream, **still open**) — fixes "Contact introuvable" after "+ Nouveau contact": `addContact` in `src/store/contacts.js` silently dropped a new contact when its name sorted before every existing entry (upstream #5681).
+- **Duplicate contact + fresh-copy name** (upstream [PR #5734](https://github.com/nextcloud/contacts/pull/5734)) — `copyContactToAddressbook` now creates the copy with `addressbook.dav.createVCard(…)` (fresh URI **and** UID) instead of a WebDAV `COPY`, which kept the source file name and made a later move into that address book collide with `412 Precondition Failed`; plus a new **Duplicate contact** action (copy into the same address book) and FR labels ("Cloner le contact" / "Dupliquer le contact").
+
+⚠️ `occ app:update contacts` overwrites the rebuilt bundle — re-apply both patches and rebuild (`contacts/README.md`). Users need one hard refresh (Ctrl+Shift+R) after a swap. Deployment history: `logs/nextcloud.md` (local NC).
 
 ## 7. Webmail — webmail.ronzz.org (SnappyMail)
 

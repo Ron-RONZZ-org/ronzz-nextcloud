@@ -1,0 +1,102 @@
+diff --git a/l10n/fr.js b/l10n/fr.js
+index 852f719..a630afd 100644
+--- a/l10n/fr.js
++++ b/l10n/fr.js
+@@ -193,7 +193,8 @@ OC.L10N.register(
+     "Upload a new picture" : "Téléverser une nouvelle image",
+     "Choose from Files" : "Sélectionner depuis les fichiers",
+     "Download picture" : "Télécharger l'image",
+-    "Clone contact" : "Dupliquer le contact",
++    "Clone contact" : "Cloner le contact",
++    "Duplicate contact" : "Dupliquer le contact",
+     "This contact is in read-only mode. You do not have permission to edit this contact." : "Ce contact est en lecture seule. Vous n'avez pas les autorisations pour modifier ce contact.",
+     "The contact you were trying to edit has changed. Please manually refresh the contact. Any further edits will be discarded." : "Le contact que vous essayiez de modifier a changé. Merci de rafraîchir manuellement le contact. Vos modifications seront abandonnées. ",
+     "Address book" : "Carnet d'adresses",
+diff --git a/l10n/fr.json b/l10n/fr.json
+index 624d8b6..a2bd067 100644
+--- a/l10n/fr.json
++++ b/l10n/fr.json
+@@ -191,7 +191,8 @@
+     "Upload a new picture" : "Téléverser une nouvelle image",
+     "Choose from Files" : "Sélectionner depuis les fichiers",
+     "Download picture" : "Télécharger l'image",
+-    "Clone contact" : "Dupliquer le contact",
++    "Clone contact" : "Cloner le contact",
++    "Duplicate contact" : "Dupliquer le contact",
+     "This contact is in read-only mode. You do not have permission to edit this contact." : "Ce contact est en lecture seule. Vous n'avez pas les autorisations pour modifier ce contact.",
+     "The contact you were trying to edit has changed. Please manually refresh the contact. Any further edits will be discarded." : "Le contact que vous essayiez de modifier a changé. Merci de rafraîchir manuellement le contact. Vos modifications seront abandonnées. ",
+     "Address book" : "Carnet d'adresses",
+diff --git a/src/components/ContactDetails.vue b/src/components/ContactDetails.vue
+index 497505b..960acb9 100644
+--- a/src/components/ContactDetails.vue
++++ b/src/components/ContactDetails.vue
+@@ -208,6 +208,16 @@
+ 						</template>
+ 						{{ t('contacts', 'Clone contact') }}
+ 					</ActionButton>
++					<!-- user can duplicate the contact inside its own addressbook -->
++					<ActionButton
++						v-if="isReadOnly && canModifyCard"
++						:close-after-click="true"
++						@click="duplicateContact">
++						<template #icon>
++							<IconContentDuplicate :size="20" />
++						</template>
++						{{ t('contacts', 'Duplicate contact') }}
++					</ActionButton>
+ 					<ActionButton :close-after-click="true" @click="showQRcode">
+ 						<template #icon>
+ 							<IconQr :size="20" />
+@@ -419,6 +429,7 @@ import IconAccount from 'vue-material-design-icons/AccountOutline.vue'
+ import CakeIcon from 'vue-material-design-icons/Cake.vue'
+ import CheckIcon from 'vue-material-design-icons/Check.vue'
+ import IconCopy from 'vue-material-design-icons/ContentCopy.vue'
++import IconContentDuplicate from 'vue-material-design-icons/ContentDuplicate.vue'
+ import IconMail from 'vue-material-design-icons/EmailOutline.vue'
+ import EyeCircleIcon from 'vue-material-design-icons/EyeCircleOutline.vue'
+ import FolderMultipleImage from 'vue-material-design-icons/FolderMultipleImage.vue'
+@@ -467,6 +478,7 @@ export default defineComponent({
+ 		IconQr,
+ 		CakeIcon,
+ 		IconCopy,
++		IconContentDuplicate,
+ 		IconLoading,
+ 		PencilIcon,
+ 		CheckIcon,
+@@ -1160,6 +1172,13 @@ export default defineComponent({
+ 			this.pickedAddressbook = null
+ 		},
+ 
++		/**
++		 * Duplicate the current contact inside its own addressbook
++		 */
++		async duplicateContact() {
++			await this.copyContactToAddressbook(this.contact.addressbook.id)
++		},
++
+ 		/**
+ 		 * Should display the property
+ 		 *
+diff --git a/src/store/addressbooks.js b/src/store/addressbooks.js
+index 3432b67..ad96d49 100644
+--- a/src/store/addressbooks.js
++++ b/src/store/addressbooks.js
+@@ -582,12 +582,16 @@ const actions = {
+ 	 * @return {Contact} the new contact object
+ 	 */
+ 	async copyContactToAddressbook(context, { contact, addressbook }) {
+-		// init new contact & strip old uid
++		// init new contact & strip old uid (a fresh one is generated on construction)
+ 		const vData = contact.vCard.toString().replace(/^UID.+/im, '')
+ 		const newContact = new Contact(vData, addressbook)
+ 
+ 		try {
+-			const response = await contact.dav.copy(addressbook.dav)
++			// Create the copy with a fresh resource name instead of a server-side COPY.
++			// A DAV COPY keeps the source file name, so the copy and the original would
++			// share the same URI and a later move into that address book would be
++			// rejected with "412 Precondition Failed".
++			const response = await addressbook.dav.createVCard(newContact.toStringStripQuotes())
+ 			// setting the contact dav property
+ 			newContact.dav = response
+ 		} catch (error) {
