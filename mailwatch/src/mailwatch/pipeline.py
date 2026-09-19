@@ -158,6 +158,10 @@ class MailwatchPipeline:
 
         Returns:
             Number of messages processed.
+
+        Raises:
+            IMAPAuthError: The server rejected the credentials.
+            IMAPConnectionError: Transient IMAP failure.
         """
         pw = password if password is not None else get_password(account.email)
         if not pw:
@@ -172,11 +176,6 @@ class MailwatchPipeline:
         client = IMAPClient(account.imap_host, account.imap_port, account.imap_use_ssl)
         try:
             client.connect(account.imap_username, pw)
-        except ConnectionError as exc:
-            logger.warning("[pipeline] Cannot connect %s: %s", account.email, exc)
-            return 0
-
-        try:
             return self._scan_unseen(client, account, folder)
         finally:
             client.disconnect()

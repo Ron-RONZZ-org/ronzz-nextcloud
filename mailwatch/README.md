@@ -152,6 +152,11 @@ hits_threshold = 3              # domain blocked after N spam classifications
 window_days = 14
 script_name = "mailwatch_blocks"
 
+[daemon.connection]
+base_delay_seconds = 60         # transient IMAP failure backoff (doubles per failure)
+max_delay_seconds = 1800        # backoff cap
+stop_on_auth_failure = true     # definitive auth failure → stop (exit 3), don't retry
+
 [[accounts]]
 email = "me@ronzz.org"
 imap_host = "imap.migadu.com"   # Migadu defaults shown
@@ -175,10 +180,31 @@ Every event is appended as a JSON line to `<data_dir>/audit.jsonl`:
 ```
 
 Event types: `startup`, `shutdown`, `classification`, `move`,
-`sieve_block`, `sieve_block_pushed`, `train`, `feed_update`, `redirect`
+`sieve_block`, `sieve_block_pushed`, `train`, `feed_update`, `redirect`,
+`auth_failure`
 (with `event_detail` `ok` | `append_failed` | `dry-run`, plus `target`,
 `source_folder`, `destination_folder`, `uid`).
 `"dry_run": true` is set on every line when running with `--dry-run`.
+
+## Failure handling
+
+- **Transient** IMAP failures (DNS/TCP/TLS/timeout) back off
+  exponentially per account (`daemon.connection`), with ±20 % jitter.
+- **Definitive authentication failures** (`IMAPAuthError`) cannot be
+  fixed by retrying — and a tight retry loop can get the source IP
+  rate-limited/tarpitted by the provider (Migadu bans an IP after too
+  many attempts in a minute). By default the daemon logs at ERROR,
+  emits an `auth_failure` audit event and stops with exit code 3; the
+  systemd unit sets `RestartPreventExitStatus=3`, so it stays down
+  (failed) until the keyring password is corrected:
+
+  ```bash
+  sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch password set me@ronzz.org
+  sudo systemctl start mailwatch
+  ```
+
+  Set `daemon.connection.stop_on_auth_failure = false` to keep running
+  with backoff instead of stopping.
 
 ## CLI
 

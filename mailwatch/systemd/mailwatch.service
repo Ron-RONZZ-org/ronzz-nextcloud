@@ -17,6 +17,10 @@ Environment=MAILWATCH_CONFIG_DIR=/var/lib/mailwatch
 ExecStart=/opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml
 Restart=on-failure
 RestartSec=10
+# A definitive IMAP authentication failure exits with EXIT_AUTH_FAILURE
+# (mailwatch.errors.EXIT_AUTH_FAILURE = 3).  Do NOT restart-loop on a bad
+# password — stay down (failed) until the operator fixes the keyring.
+RestartPreventExitStatus=3
 # Standard output goes to the journal; audit trail is written separately.
 StandardOutput=journal
 StandardError=journal

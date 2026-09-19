@@ -22,9 +22,11 @@ import threading
 from pathlib import Path
 
 from mailwatch.audit import AuditLog
+from mailwatch.backoff import ConnectionBackoff
 from mailwatch.config import ConfigError, MailwatchConfig, load_config
 from mailwatch.db import MailwatchDB, get_db
 from mailwatch.email.imap.idle import IMAPIdleManager
+from mailwatch.errors import EXIT_AUTH_FAILURE, IMAPAuthError, IMAPConnectionError
 from mailwatch.keyring import get_password, set_password
 from mailwatch.pipeline import AccountLock, MailwatchPipeline
 from mailwatch.redirector import Redirector
@@ -100,6 +102,12 @@ class MailwatchDaemon:
         self.training = TrainingIdler(self.db, cfg.daemon.training, self.audit)
         self.idle = IMAPIdleManager()
         self.locks = AccountLock()
+        conn = cfg.daemon.connection
+        self._backoff = ConnectionBackoff(
+            base_delay=conn.base_delay_seconds,
+            max_delay=conn.max_delay_seconds,
+        )
+        self._exit_code = 0
         self._stop = threading.Event()
         self._scheduler_threads: list[threading.Thread] = []
 
@@ -131,13 +139,57 @@ class MailwatchDaemon:
             pass
         finally:
             self._shutdown()
-        return 0
+        return self._exit_code
 
     def _shutdown(self) -> None:
         logger.info("Shutting down…")
         self._stop.set()
         self.idle.stop_all()
         self.audit.emit("shutdown")
+
+    # ── Failure handling ──────────────────────────────────────────────
+
+    def _on_auth_failure(self, account_email: str, exc: Exception) -> None:
+        """Handle a definitive IMAP authentication failure.
+
+        A stale password cannot be fixed by retrying, and the retry storm
+        can get the source IP rate-limited/tarpitted by the provider
+        (Migadu).  By default the daemon stops so the operator notices
+        instead of it silently hammering; set
+        ``daemon.connection.stop_on_auth_failure = false`` to instead
+        keep running with exponential backoff.
+        """
+        if self._stop.is_set():
+            return
+        stop = self.cfg.daemon.connection.stop_on_auth_failure
+        logger.error(
+            "[watcher] IMAP authentication failed for %s%s — fix the keyring "
+            "password (mailwatch password set %s): %s",
+            account_email,
+            " — stopping daemon" if stop else "",
+            account_email,
+            exc,
+        )
+        self.audit.emit(
+            "auth_failure", account=account_email, error=str(exc), stopped=stop
+        )
+        if stop:
+            self._exit_code = EXIT_AUTH_FAILURE
+            self._stop.set()
+        else:
+            self._backoff.record_failure(account_email)
+
+    def _on_connection_failure(self, account_email: str, exc: Exception) -> None:
+        """Back off after a transient IMAP failure (no stop)."""
+        delay = self._backoff.record_failure(account_email)
+        logger.warning(
+            "[watcher] IMAP connection failed for %s (attempt %d) — "
+            "backing off %.0fs: %s",
+            account_email,
+            self._backoff.consecutive_failures(account_email),
+            delay,
+            exc,
+        )
 
     def _register_signal_handlers(self) -> None:
         def _handle(signum: int, _frame: object) -> None:
@@ -169,6 +221,7 @@ class MailwatchDaemon:
                 password=pw,
                 on_notification=self._on_inbox_notification,
                 folder="INBOX",
+                on_auth_failure=self._on_auth_failure,
             )
             if self.cfg.daemon.training.enabled:
                 self.idle.start_for_account(
@@ -180,6 +233,7 @@ class MailwatchDaemon:
                     password=pw,
                     on_notification=self._on_junk_notification,
                     folder=account.resolved_junk_folder,
+                    on_auth_failure=self._on_auth_failure,
                 )
             if account.redirect.enabled and account.redirect.target is not None:
                 self.idle.start_for_account(
@@ -191,6 +245,7 @@ class MailwatchDaemon:
                     password=pw,
                     on_notification=self._on_redirect_notification,
                     folder=account.redirect.source_folder,
+                    on_auth_failure=self._on_auth_failure,
                 )
 
     def _on_inbox_notification(
@@ -206,6 +261,11 @@ class MailwatchDaemon:
             return
         try:
             self.pipeline.process_account(account, folder="INBOX")
+            self._backoff.record_success(account_email)
+        except IMAPAuthError as exc:
+            self._on_auth_failure(account_email, exc)
+        except IMAPConnectionError as exc:
+            self._on_connection_failure(account_email, exc)
         except Exception as exc:
             logger.warning(
                 "[watcher] INBOX processing failed for %s: %s", account_email, exc
@@ -226,8 +286,13 @@ class MailwatchDaemon:
             return
         try:
             summary = self.training.scan_account(account)
+            self._backoff.record_success(account_email)
             if summary.get("spam") or summary.get("ham"):
                 logger.info("[training] %s: %s", account_email, summary)
+        except IMAPAuthError as exc:
+            self._on_auth_failure(account_email, exc)
+        except IMAPConnectionError as exc:
+            self._on_connection_failure(account_email, exc)
         except Exception as exc:
             logger.warning("[watcher] Junk scan failed for %s: %s", account_email, exc)
         finally:
@@ -246,8 +311,13 @@ class MailwatchDaemon:
             return
         try:
             n = self._run_redirector(account)
+            self._backoff.record_success(account_email)
             if n:
                 logger.info("[redirect] %s: %d message(s) redirected", account_email, n)
+        except IMAPAuthError as exc:
+            self._on_auth_failure(account_email, exc)
+        except IMAPConnectionError as exc:
+            self._on_connection_failure(account_email, exc)
         except Exception as exc:
             logger.warning(
                 "[watcher] redirect scan failed for %s: %s", account_email, exc
@@ -289,7 +359,11 @@ class MailwatchDaemon:
         interval = self.cfg.daemon.catch_up_scan_seconds
         while not self._stop.wait(interval):
             for account in self.cfg.accounts:
+                if self._stop.is_set():
+                    return
                 if not get_password(account.email):
+                    continue
+                if not self._backoff.should_attempt(account.email):
                     continue
                 if not self.locks.acquire(account.email, timeout=1.0):
                     continue
@@ -306,6 +380,11 @@ class MailwatchDaemon:
                                 account.email,
                                 n,
                             )
+                    self._backoff.record_success(account.email)
+                except IMAPAuthError as exc:
+                    self._on_auth_failure(account.email, exc)
+                except IMAPConnectionError as exc:
+                    self._on_connection_failure(account.email, exc)
                 except Exception as exc:
                     logger.warning(
                         "[watcher] Catch-up scan failed for %s: %s", account.email, exc
@@ -317,14 +396,23 @@ class MailwatchDaemon:
         interval = self.cfg.daemon.training.scan_interval_seconds
         while not self._stop.wait(interval):
             for account in self.cfg.accounts:
+                if self._stop.is_set():
+                    return
                 if not get_password(account.email):
+                    continue
+                if not self._backoff.should_attempt(account.email):
                     continue
                 if not self.locks.acquire(account.email, timeout=1.0):
                     continue
                 try:
                     summary = self.training.scan_account(account)
+                    self._backoff.record_success(account.email)
                     if summary.get("spam") or summary.get("ham"):
                         logger.info("[training] %s: %s", account.email, summary)
+                except IMAPAuthError as exc:
+                    self._on_auth_failure(account.email, exc)
+                except IMAPConnectionError as exc:
+                    self._on_connection_failure(account.email, exc)
                 except Exception as exc:
                     logger.warning(
                         "[watcher] Training scan failed for %s: %s", account.email, exc
@@ -374,13 +462,17 @@ class MailwatchDaemon:
                         logger.info(
                             "[redirect] once: %s: %d redirected", account.email, n
                         )
+            except IMAPAuthError as exc:
+                self._on_auth_failure(account.email, exc)
+            except IMAPConnectionError as exc:
+                self._on_connection_failure(account.email, exc)
             except Exception as exc:
                 logger.warning("Account %s failed: %s", account.email, exc)
             finally:
                 self.locks.release(account.email)
         self.audit.emit("shutdown", once=True)
         logger.info("Single pass complete: %d message(s) processed", total)
-        return 0
+        return self._exit_code
 
 
 # ── Password subcommand ─────────────────────────────────────────────────

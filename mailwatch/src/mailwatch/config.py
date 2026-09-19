@@ -45,6 +45,22 @@ class AutoBlockConfig:
 
 
 @dataclass
+class ConnectionConfig:
+    """IMAP reconnect + failure policy.
+
+    Transient failures (network/TLS/timeout) back off exponentially up
+    to ``max_delay_seconds``.  A definitive authentication failure stops
+    the daemon by default (``stop_on_auth_failure``): a stale password
+    cannot be fixed by retrying, and a tight retry loop can get the
+    source IP rate-limited/tarpitted by the provider's auth limiter.
+    """
+
+    base_delay_seconds: int = 60
+    max_delay_seconds: int = 1800
+    stop_on_auth_failure: bool = True
+
+
+@dataclass
 class RedirectTarget:
     """Destination for the send-to-hesk redirector.
 
@@ -105,6 +121,7 @@ class DaemonConfig:
     junk_folder: str = "Junk"
     training: TrainingConfig = field(default_factory=TrainingConfig)
     auto_block: AutoBlockConfig = field(default_factory=AutoBlockConfig)
+    connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     # Per-account redirector (send-to-hesk → Hesk inbox).
     redirect: RedirectConfig = field(default_factory=RedirectConfig)
 
@@ -217,7 +234,7 @@ def _parse_redirect(raw: dict[str, Any], account_email: str) -> RedirectConfig:
     """Parse an optional ``[accounts.redirect]`` block."""
     if not raw:
         return RedirectConfig()
-    target_raw = raw.get("target", None) or {}
+    target_raw = raw.get("target") or {}
     target = _parse_redirect_target(target_raw, account_email)
     return RedirectConfig(
         enabled=_parse_bool(raw.get("enabled"), f"accounts[{account_email}].redirect.enabled", False),
@@ -253,7 +270,7 @@ def _parse_account(raw: dict[str, Any], index: int) -> AccountConfig:
             sieve_use_tls=_parse_bool(
                 raw.get("sieve_use_tls"), f"accounts[{index}].sieve_use_tls", True
             ),
-            redirect=_parse_redirect(raw.get("redirect", None), email),
+            redirect=_parse_redirect(raw.get("redirect"), email),
         )
     except ConfigError:
         raise
@@ -289,6 +306,7 @@ def load_config(path: str | Path | None = None) -> MailwatchConfig:
     daemon_raw = raw.get("daemon", {}) or {}
     training_raw = daemon_raw.get("training", {}) or {}
     autoblock_raw = daemon_raw.get("auto_block", {}) or {}
+    connection_raw = daemon_raw.get("connection", {}) or {}
 
     daemon = DaemonConfig(
         dry_run=_parse_bool(daemon_raw.get("dry_run"), "daemon.dry_run", False),
@@ -345,11 +363,40 @@ def load_config(path: str | Path | None = None) -> MailwatchConfig:
             ),
             script_name=str(autoblock_raw.get("script_name", "mailwatch_blocks")),
         ),
+        connection=ConnectionConfig(
+            base_delay_seconds=_parse_int(
+                connection_raw.get("base_delay_seconds"),
+                "daemon.connection.base_delay_seconds",
+                60,
+            ),
+            max_delay_seconds=_parse_int(
+                connection_raw.get("max_delay_seconds"),
+                "daemon.connection.max_delay_seconds",
+                1800,
+            ),
+            stop_on_auth_failure=_parse_bool(
+                connection_raw.get("stop_on_auth_failure"),
+                "daemon.connection.stop_on_auth_failure",
+                True,
+            ),
+        ),
     )
 
     if not (0.0 < daemon.spam_threshold <= 1.0):
         raise ConfigError(
             f"daemon.spam_threshold must be in (0, 1], got {daemon.spam_threshold}"
+        )
+
+    if daemon.connection.base_delay_seconds <= 0:
+        raise ConfigError(
+            "daemon.connection.base_delay_seconds must be > 0, got "
+            f"{daemon.connection.base_delay_seconds}"
+        )
+    if daemon.connection.max_delay_seconds < daemon.connection.base_delay_seconds:
+        raise ConfigError(
+            "daemon.connection.max_delay_seconds must be >= base_delay_seconds "
+            f"({daemon.connection.max_delay_seconds} < "
+            f"{daemon.connection.base_delay_seconds})"
         )
 
     accounts_raw = raw.get("accounts", []) or []
@@ -373,6 +420,7 @@ __all__ = [
     "AccountConfig",
     "AutoBlockConfig",
     "ConfigError",
+    "ConnectionConfig",
     "DaemonConfig",
     "MailwatchConfig",
     "RedirectConfig",

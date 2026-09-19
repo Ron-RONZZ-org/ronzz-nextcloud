@@ -36,6 +36,17 @@ window_days = 14
 # Sieve script name on the server (per account).
 script_name = "mailwatch_blocks"
 
+[daemon.connection]
+# Exponential backoff after a TRANSIENT IMAP failure (network/TLS/timeout).
+# Delay = base * 2**(n-1), capped at max_delay, +/- 20% jitter.
+base_delay_seconds = 60
+max_delay_seconds = 1800
+# A definitive authentication failure cannot be fixed by retrying, and a
+# tight retry loop can get the source IP rate-limited/tarpitted by the
+# provider.  true = stop the daemon (exit 3; systemd keeps it down) so the
+# operator notices.  false = keep running with exponential backoff.
+stop_on_auth_failure = true
+
 [[accounts]]
 # Account email — the keyring key for the password.
 email = "me@ronzz.org"

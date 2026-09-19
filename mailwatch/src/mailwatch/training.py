@@ -58,6 +58,10 @@ class TrainingIdler:
         """Run one reconciliation scan for a single account.
 
         Returns a summary dict with trained counts.
+
+        Raises:
+            IMAPAuthError: The server rejected the credentials.
+            IMAPConnectionError: Transient IMAP failure.
         """
         from mailwatch.keyring import get_password
 
@@ -72,11 +76,6 @@ class TrainingIdler:
         client = IMAPClient(account.imap_host, account.imap_port, account.imap_use_ssl)
         try:
             client.connect(account.imap_username, pw)
-        except ConnectionError as exc:
-            logger.warning("[training] Cannot connect %s: %s", account.email, exc)
-            return {"spam": 0, "ham": 0, "skipped_moved": 0, "error": str(exc)}
-
-        try:
             return self._reconcile(client, account)
         finally:
             client.disconnect()

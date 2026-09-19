@@ -30,6 +30,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from mailwatch.errors import IMAPAuthError
+
 logger = logging.getLogger(__name__)
 
 # Maximum time to stay in IDLE before re-issuing (29 min, RFC 2177 recommends < 30)
@@ -61,6 +63,9 @@ class IMAPIdleThread:
         folder: Folder to watch (default ``"INBOX"``).
         on_notification: Callback ``(account_email, folder, event_type)``
                          where event_type is ``'exists'`` or ``'flags'``.
+        on_auth_failure: Optional callback ``(account_email, exception)``
+                         invoked when the server rejects the credentials.
+                         The thread stops itself after calling it.
     """
 
     def __init__(
@@ -73,6 +78,7 @@ class IMAPIdleThread:
         password: str,
         on_notification: Callable[[str, str, str], None],
         folder: str = "INBOX",
+        on_auth_failure: Callable[[str, Exception], None] | None = None,
     ):
         self.account_email = account_email
         self.folder = folder
@@ -82,6 +88,7 @@ class IMAPIdleThread:
         self._username = username
         self._password = password
         self._on_notification = on_notification
+        self._on_auth_failure = on_auth_failure
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._last_heartbeat: float = 0.0
@@ -197,7 +204,19 @@ class IMAPIdleThread:
 
         client = IMAPClient(self._host, self._port, self._use_ssl)
         try:
-            client.connect(self._username, self._password)
+            try:
+                client.connect(self._username, self._password)
+            except IMAPAuthError as exc:
+                logger.error(
+                    "[idle] IMAP authentication failed for %s/%s: %s",
+                    self.account_email,
+                    self.folder,
+                    exc,
+                )
+                if self._on_auth_failure is not None:
+                    self._on_auth_failure(self.account_email, exc)
+                self._stop_event.set()
+                return
             self._connected = True
             self._reconnect_count = 0
             self._last_heartbeat = time.monotonic()
@@ -359,6 +378,7 @@ class IMAPIdleManager:
         password: str,
         on_notification: Callable[[str, str, str], None],
         folder: str = "INBOX",
+        on_auth_failure: Callable[[str, Exception], None] | None = None,
     ) -> bool:
         """Start an IDLE thread for an account+folder pair.
 
@@ -371,6 +391,8 @@ class IMAPIdleManager:
             password: IMAP password.
             on_notification: Callback for notifications.
             folder: Folder to watch (default ``"INBOX"``).
+            on_auth_failure: Optional callback when the server rejects
+                the credentials.
 
         Returns:
             True if the thread was started, False if already running.
@@ -391,6 +413,7 @@ class IMAPIdleManager:
                 password=password,
                 on_notification=on_notification,
                 folder=folder,
+                on_auth_failure=on_auth_failure,
             )
             self._threads[key] = thread
 
@@ -415,6 +438,7 @@ class IMAPIdleManager:
         password: str,
         on_notification: Callable[[str, str, str], None],
         folder: str = "INBOX",
+        on_auth_failure: Callable[[str, Exception], None] | None = None,
     ) -> bool:
         """Restart the IDLE thread for an account (stop then start)."""
         key = self._key(account_email, folder)
@@ -431,6 +455,7 @@ class IMAPIdleManager:
             password,
             on_notification,
             folder=folder,
+            on_auth_failure=on_auth_failure,
         )
 
     def stop_all(self) -> None:

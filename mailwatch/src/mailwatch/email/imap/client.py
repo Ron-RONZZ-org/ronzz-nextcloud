@@ -20,6 +20,7 @@ from typing import Any
 
 from mailwatch.email.imap.capabilities import IMAPCapabilities, detect_capabilities
 from mailwatch.email.imap.parser import parse_email_message
+from mailwatch.errors import IMAPAuthError, IMAPConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -171,16 +172,33 @@ class IMAPClient:
         """Connect and login to IMAP server.
 
         After successful login, detects server capabilities.
+
+        Raises:
+            IMAPAuthError: The server rejected the credentials.  This is
+                definitive — retrying cannot fix a stale password.
+            IMAPConnectionError: Transient failure (DNS, TCP, TLS,
+                timeout).  Safe to retry with backoff.
         """
         try:
             if self.use_ssl:
                 self._conn = imaplib.IMAP4_SSL(self.host, self.port, timeout=30)
             else:
                 self._conn = imaplib.IMAP4(self.host, self.port, timeout=30)
+        except (
+            socket.gaierror,
+            ConnectionRefusedError,
+            TimeoutError,
+            ssl.SSLError,
+            OSError,
+        ) as e:
+            raise IMAPConnectionError(
+                f"IMAP connection failed: {username} at {self.host}:{self.port} — {e}"
+            ) from e
+
+        try:
             self._conn.login(username, password)
-            self.capabilities = detect_capabilities(self._conn)
         except imaplib.IMAP4.error as e:
-            raise ConnectionError(
+            raise IMAPAuthError(
                 f"IMAP authentication failed for {username} at {self.host}:{self.port} — {e}"
             ) from e
         except (
@@ -190,8 +208,22 @@ class IMAPClient:
             ssl.SSLError,
             OSError,
         ) as e:
-            raise ConnectionError(
+            raise IMAPConnectionError(
                 f"IMAP connection failed: {username} at {self.host}:{self.port} — {e}"
+            ) from e
+
+        try:
+            self.capabilities = detect_capabilities(self._conn)
+        except (
+            imaplib.IMAP4.error,
+            socket.gaierror,
+            ConnectionRefusedError,
+            TimeoutError,
+            ssl.SSLError,
+            OSError,
+        ) as e:
+            raise IMAPConnectionError(
+                f"IMAP capability detection failed: {username} at {self.host}:{self.port} — {e}"
             ) from e
 
     @property
@@ -645,12 +677,12 @@ class IMAPClient:
             List of IMAP UIDs matching the search.
 
         Raises:
-            ConnectionError: If the IMAP connection fails.
+            IMAPConnectionError: If the IMAP connection fails.
         """
         try:
             self.conn.select(_imap_quote_folder(folder), readonly=True)
         except Exception as exc:
-            raise ConnectionError(
+            raise IMAPConnectionError(
                 f"Cannot select folder {folder!r} for search: {exc}"
             ) from exc
 

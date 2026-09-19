@@ -30,6 +30,7 @@ import logging
 from mailwatch.audit import AuditLog
 from mailwatch.config import AccountConfig, RedirectConfig
 from mailwatch.email.imap.client import IMAPClient
+from mailwatch.errors import IMAPConnectionError
 from mailwatch.keyring import get_password
 
 logger = logging.getLogger(__name__)
@@ -92,9 +93,11 @@ class Redirector:
         try:
             src_client.connect(self.account.imap_username, src_pw)
             dst_client.connect(target.imap_username, dst_pw)
-        except ConnectionError as exc:
+        except IMAPConnectionError as exc:
             logger.warning("[redirect] Connection failed: %s", exc)
-            return 0
+            src_client.disconnect()
+            dst_client.disconnect()
+            raise
 
         try:
             uids = self._list_source_uids(src_client)
