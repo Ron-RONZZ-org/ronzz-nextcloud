@@ -1,0 +1,7 @@
+[Unit]
+Description=Alert when mailwatch fails (log + optional webhook)
+After=mailwatch.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailwatch-alert mailwatch.service

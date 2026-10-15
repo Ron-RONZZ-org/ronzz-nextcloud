@@ -114,10 +114,13 @@ sudo editor /etc/mailwatch/config.toml      # add accounts
 sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch password set me@ronzz.org
 sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch password check me@ronzz.org
 
-# 5. systemd unit (see systemd/mailwatch.service)
+# 5. systemd units + alert/watchdog (see systemd/)
 sudo cp systemd/mailwatch.service /etc/systemd/system/
+sudo cp systemd/mailwatch-alert.service systemd/mailwatch-watchdog.service systemd/mailwatch-watchdog.timer /etc/systemd/system/
+sudo install -m 0755 systemd/mailwatch-alert systemd/mailwatch-watchdog /usr/local/sbin/
+sudo install -m 0600 systemd/alert.env.example /etc/mailwatch/alert.env   # then edit to set a channel
 sudo systemctl daemon-reload
-sudo systemctl enable --now mailwatch
+sudo systemctl enable --now mailwatch mailwatch-watchdog.timer
 
 # 6. Dry-run before going live:
 sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml --once --dry-run
@@ -190,21 +193,37 @@ Event types: `startup`, `shutdown`, `classification`, `move`,
 
 - **Transient** IMAP failures (DNS/TCP/TLS/timeout) back off
   exponentially per account (`daemon.connection`), with ±20 % jitter.
-- **Definitive authentication failures** (`IMAPAuthError`) cannot be
-  fixed by retrying — and a tight retry loop can get the source IP
-  rate-limited/tarpitted by the provider (Migadu bans an IP after too
-  many attempts in a minute). By default the daemon logs at ERROR,
-  emits an `auth_failure` audit event and stops with exit code 3; the
-  systemd unit sets `RestartPreventExitStatus=3`, so it stays down
-  (failed) until the keyring password is corrected:
+- **Definitive authentication failures** (`IMAPAuthError`) make the
+  daemon log at ERROR, emit an `auth_failure` audit event and exit with
+  code 3. A tight retry loop can get the source IP rate-limited (Migadu
+  bans an IP after too many attempts *in a minute* — 2026-09-17), but a
+  Migadu-side "Authentication failed" is also occasionally *transient*
+  (2026-10-05: a valid keyring password was rejected once and the daemon
+  stayed down for 10 days). So the unit retries with **systemd's native
+  exponential backoff** and pages if it stays down.
 
+  - **Retries** (`mailwatch.service`): `RestartSec=5min` →
+    `RestartMaxDelaySec=6h` over `RestartSteps=6` — attempts roughly every
+    5 m, 10 m, 21 m, 43 m, 1 h 28 m, 3 h, 6 h, so they are spread across
+    ~24 h and never closer than 5 min (far below Migadu's per-minute ban
+    rate).
+  - **Alert**: `OnFailure=mailwatch-alert.service` pages the moment the
+    unit truly fails; because the unit usually keeps auto-restarting
+    (never reaching `failed`), a `mailwatch-watchdog.timer` (every 10 min)
+    also pages once the unit has been down for **≥ 1 h**. Both call
+    `/usr/local/sbin/mailwatch-alert` → `/var/log/mailwatch/alerts.log` +
+    journal + optional `ALERT_WEBHOOK_URL` (`/etc/mailwatch/alert.env`).
+
+  Fix a genuine (stale) credential, then start it (the backoff picks it up
+  on its own, but this is immediate):
   ```bash
   sudo -u mailwatch /opt/mailwatch/venv/bin/mailwatch password set me@ronzz.org
   sudo systemctl start mailwatch
   ```
 
-  Set `daemon.connection.stop_on_auth_failure = false` to keep running
-  with backoff instead of stopping.
+  Set `daemon.connection.stop_on_auth_failure = false` to keep the process
+  running with its *own* backoff instead of exiting (the watchdog — not
+  OnFailure — is then what pages).
 
 ## CLI
 

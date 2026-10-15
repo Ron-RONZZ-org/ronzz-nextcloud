@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic liveness check for mailwatch
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

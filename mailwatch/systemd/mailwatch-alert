@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# mailwatch-alert — invoked by mailwatch.service's OnFailure= (or run by hand)
+# to report that the unit is DOWN.  Always appends to /var/log/mailwatch/alerts.log
+# and the journal; additionally POSTs a short notice to ALERT_WEBHOOK_URL if set
+# in /etc/mailwatch/alert.env.
+#
+# OnFailure fires on EVERY failed start attempt, including attempts systemd is
+# about to auto-restart — so skip unless the unit is genuinely down, otherwise a
+# self-recovering blip would page.  Pass "--force" (2nd arg) to bypass the guard.
+set -uo pipefail
+
+UNIT="${1:-mailwatch.service}"
+HOST="$(hostname -s)"
+WHEN="$(date -Is)"
+ALERT_LOG="/var/log/mailwatch/alerts.log"
+AUDIT="/var/lib/mailwatch/audit.jsonl"
+
+state_of() { local s; s="$(systemctl is-active "$1" 2>/dev/null || true)"; printf '%s' "${s:-unknown}"; }
+is_up() { case "$(state_of "$1")" in active|activating|deactivating|reloading|refreshing) return 0;; *) return 1;; esac; }
+
+if [ "${2:-}" != "--force" ]; then
+    if is_up "$UNIT"; then echo "mailwatch-alert: $UNIT is '$(state_of "$UNIT")' (up/auto-restarting) — no alert" >&2; exit 0; fi
+    sleep 2   # let a pending auto-restart win the race
+    if is_up "$UNIT"; then echo "mailwatch-alert: $UNIT recovered/restarting — no alert" >&2; exit 0; fi
+fi
+
+STATE="$(state_of "$UNIT")"
+RESULT="$(systemctl show "$UNIT" -p Result --value 2>/dev/null || true)"
+STATUS="$(systemctl show "$UNIT" -p ExecMainStatus --value 2>/dev/null || true)"
+
+short="[mailwatch] $HOST: $UNIT is $STATE (result=$RESULT, status=$STATUS) at $WHEN — check: sudo systemctl start $UNIT"
+detail="$short
+--- recent journal (last 5) ---
+$(journalctl -u "$UNIT" -n 5 --no-pager 2>/dev/null || true)
+--- last audit event ---
+$(tail -n 1 "$AUDIT" 2>/dev/null || true)"
+
+mkdir -p "$(dirname "$ALERT_LOG")"
+printf '%s\n\n' "$detail" >> "$ALERT_LOG"
+printf '%s\n' "$short" >&2
+
+if [ -r /etc/mailwatch/alert.env ]; then
+    . /etc/mailwatch/alert.env
+fi
+if [ -n "${ALERT_WEBHOOK_URL:-}" ]; then
+    curl -fsS -m 15 --retry 3 -H 'Title: mailwatch ALERT' --data-binary "$short" "$ALERT_WEBHOOK_URL" >/dev/null \
+        || echo "mailwatch-alert: webhook POST to ALERT_WEBHOOK_URL failed" >&2
+fi
+exit 0
