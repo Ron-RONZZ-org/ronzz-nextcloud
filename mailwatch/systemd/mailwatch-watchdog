@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# mailwatch-watchdog — alert when mailwatch has been DOWN for a while.
+# Run by mailwatch-watchdog.timer every 10 min.  Complements OnFailure=:
+# because the unit auto-restarts with exponential backoff it rarely enters the
+# 'failed' state, so a periodic liveness check is what notices a sustained outage.
+set -uo pipefail
+UNIT=mailwatch.service
+THRESHOLD="${MAILWATCH_WATCHDOG_THRESHOLD:-3600}"   # seconds down before alerting
+DOWN_SINCE=/run/mailwatch-watchdog.down
+ALERTED=/run/mailwatch-watchdog.alerted
+ALERT=/usr/local/sbin/mailwatch-alert
+
+if systemctl is-active --quiet "$UNIT"; then
+    rm -f "$DOWN_SINCE" "$ALERTED"          # healthy (or recovered) -> reset
+    exit 0
+fi
+now=$(date +%s)
+if [ ! -e "$DOWN_SINCE" ]; then echo "$now" > "$DOWN_SINCE"; exit 0; fi
+since=$(cat "$DOWN_SINCE" 2>/dev/null || echo "$now")
+[ $(( now - since )) -ge "$THRESHOLD" ] || exit 0
+[ -e "$ALERTED" ] && exit 0                  # one alert per outage
+"$ALERT" "$UNIT"
+touch "$ALERTED"

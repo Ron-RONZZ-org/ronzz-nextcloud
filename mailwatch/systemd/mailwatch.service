@@ -3,6 +3,13 @@ Description=mailwatch — IMAP IDLE spam/idler daemon for Migadu
 Documentation=https://github.com/Ron-RONZZ-org/ronzz-nextcloud/blob/main/mailwatch/README.md
 After=network-online.target
 Wants=network-online.target
+# Immediate alert if the daemon ultimately fails; a sustained outage that never
+# reaches 'failed' (because it keeps auto-restarting) is caught by the watchdog
+# timer instead (mailwatch-watchdog.timer).
+OnFailure=mailwatch-alert.service
+# Backstop against absurd flapping — the exponential backoff is the real throttle.
+StartLimitIntervalSec=24h
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -15,12 +22,17 @@ Group=mailwatch
 Environment=MAILWATCH_DATA_DIR=/var/lib/mailwatch
 Environment=MAILWATCH_CONFIG_DIR=/var/lib/mailwatch
 ExecStart=/opt/mailwatch/venv/bin/mailwatch run --config /etc/mailwatch/config.toml
+# systemd native exponential backoff (systemd >=254): first retry RestartSec, then
+# increasing to RestartMaxDelaySec over RestartSteps.  Attempts are spread across
+# ~24 h (5 min -> 6 h) and are never closer than RestartSec.  The daemon exits 3
+# (EXIT_AUTH_FAILURE) on a definitive auth failure; a *transient* Migadu-side
+# "Authentication failed" is indistinguishable from a stale password (2026-10-05),
+# so retry (bounded by the spacing) rather than stay down forever.  The 5-min
+# minimum spacing stays far below Migadu's per-minute ban threshold (2026-09-17).
 Restart=on-failure
-RestartSec=10
-# A definitive IMAP authentication failure exits with EXIT_AUTH_FAILURE
-# (mailwatch.errors.EXIT_AUTH_FAILURE = 3).  Do NOT restart-loop on a bad
-# password — stay down (failed) until the operator fixes the keyring.
-RestartPreventExitStatus=3
+RestartSec=5min
+RestartSteps=6
+RestartMaxDelaySec=6h
 # Standard output goes to the journal; audit trail is written separately.
 StandardOutput=journal
 StandardError=journal

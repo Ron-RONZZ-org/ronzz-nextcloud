@@ -1,0 +1,6 @@
+[Unit]
+Description=Watchdog: alert if mailwatch has been down
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailwatch-watchdog
